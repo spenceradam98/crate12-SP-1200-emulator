@@ -16,7 +16,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---- Core engine (no JUCE dependency, unit-testable) ----
 add_library(crate12_engine STATIC
     Source/engine/Engine.cpp
-    Source/engine/Serialize.cpp)
+    Source/engine/Serialize.cpp
+    Source/engine/FactoryKit.cpp)
 target_include_directories(crate12_engine PUBLIC Source/engine)
 set_target_properties(crate12_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

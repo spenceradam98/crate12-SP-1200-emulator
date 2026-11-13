@@ -522,6 +522,8 @@ void Crate12Editor::showSpecialMenu()
     m.addItem (19, "19 Default Decay (all sounds)...");
     m.addItem (20, "Reverse Sound (selected)");
     m.addItem (21, "Name Sound: right-click a pad", false);
+    m.addSeparator();
+    m.addItem (30, "Load Factory Kit (banks A-C)");
     m.showMenuAsync (juce::PopupMenu::Options(), [this] (int r) {
         auto& e = engine();
         const int s = e.getSelectedSound();
@@ -545,6 +547,7 @@ void Crate12Editor::showSpecialMenu()
             case 18: askNumber ("Swap selected sound with # (1-32)", 1, 32, s + 1, [this, s] (int v) { engine().swapSounds (s, v - 1); }); break;
             case 19: askNumber ("Default decay for all sounds (0-100)", 0, 100, 100, [this] (int v) { engine().setDefaultDecayAll ((float) v / 100.0f); }); break;
             case 20: e.reverseSound (s); break;
+            case 30: e.loadFactoryKit(); break;
             default: break;
         }
         syncControlsFromEngine();
@@ -563,6 +566,8 @@ void Crate12Editor::showDiskMenu()
     m.addItem (6, "5 Load Sounds...");
     m.addItem (7, "6 Load Sound #...");
     m.addItem (8, "Save All (sequences + sounds + settings)...");
+    m.addSeparator();
+    m.addItem (9, "Import folder of audio files (fills pads from the current bank)...");
     m.showMenuAsync (juce::PopupMenu::Options(), [this] (int r) {
         auto saveTo = [this] (int sections) {
             chooseFile (true, "*.c12", [this, sections] (juce::File f) {
@@ -593,6 +598,25 @@ void Crate12Editor::showDiskMenu()
                                 engine().loadSoundFromDisk (lastDisk.data(), lastDisk.size(), src - 1, dst - 1); syncControlsFromEngine(); }); }); });
                     break;
             case 8: saveTo (kDiskAll); break;
+            case 9:
+            {
+                chooser = std::make_unique<juce::FileChooser> ("Choose a folder of samples", juce::File());
+                chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [this] (const juce::FileChooser& fc) {
+                    const auto dir = fc.getResult();
+                    if (! dir.isDirectory()) return;
+                    auto files = dir.findChildFiles (juce::File::findFiles, false, "*.wav;*.aif;*.aiff;*.flac");
+                    files.sort();
+                    int slot = soundIndex (engine().getBank(), 0), loaded = 0;
+                    for (auto& f : files)
+                    {
+                        if (slot >= kNumSounds) break;
+                        if (proc.loadSampleFile (f, slot)) { ++slot; ++loaded; }
+                    }
+                    engine().setLcd ("Folder Import", (juce::String (loaded) + " sounds").toStdString());
+                    syncControlsFromEngine();
+                });
+                break;
+            }
             default: break;
         }
     });

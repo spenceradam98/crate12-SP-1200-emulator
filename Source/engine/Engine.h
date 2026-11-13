@@ -112,6 +112,7 @@ public:
     void swapSounds (int a, int b);                    // SPECIAL 18
     void setDefaultDecayAll (float decay);             // SPECIAL 19
     void reverseSound (int sound);
+    void loadFactoryKit();                             // original synthesized kit (banks A-C)
     void nameSound (int sound, const std::string& name);
     void setDynamicAllocation (int pair, bool on);     // SPECIAL 22
     void setSyncMode (SyncMode m);

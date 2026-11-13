@@ -275,6 +275,18 @@ int main()
         CHECK (mi.samplesUsed <= kAuthenticMemory);
     }
 
+    // 12. factory kit fits authentic memory and plays
+    {
+        Rig r;
+        r.e.loadFactoryKit();
+        auto mi = r.e.memoryInfo();
+        std::printf ("factory kit: %.2f s of %.2f s\n", mi.samplesUsed / kNativeRate, mi.samplesTotal / kNativeRate);
+        CHECK (mi.samplesUsed > 0 && mi.samplesUsed < kAuthenticMemory);
+        { std::lock_guard<std::recursive_mutex> l (r.e.mutex()); for (int s = 0; s < 24; ++s) CHECK (! r.e.project().sounds[(size_t) s].empty()); }
+        r.e.padPress (0, 127);
+        CHECK (r.run (4096) > 0.05f);
+    }
+
     std::printf (failures ? "%d FAILURE(S)\n" : "ALL TESTS PASSED\n", failures);
     return failures ? 1 : 0;
 }

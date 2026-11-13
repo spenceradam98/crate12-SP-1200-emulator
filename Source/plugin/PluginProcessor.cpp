@@ -16,6 +16,7 @@ juce::AudioProcessor::BusesProperties Crate12Processor::makeBuses()
 Crate12Processor::Crate12Processor() : AudioProcessor (makeBuses())
 {
     formats.registerBasicFormats();
+    engine.loadFactoryKit();   // replaced by saved state when a project is reopened
 }
 
 bool Crate12Processor::isBusesLayoutSupported (const BusesLayout& layouts) const

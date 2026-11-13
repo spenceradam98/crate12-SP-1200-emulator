@@ -38,6 +38,9 @@ Legend: ✅ done in this build · 🟡 partial · ⬜ not started · ➖ hardwar
 | Input anti-alias filter before the ADC | ✅ | |
 | Load audio files (drag and drop onto pads) | ✅ | Extension; files go through the same 26.04 kHz / 12-bit path |
 | Export a sound as WAV | ✅ | Extension |
+| Import a folder of audio files into consecutive pads | ✅ | Disk menu. Works with WAV packs people made from their own factory disks |
+| Original factory-style kit (24 sounds, banks A-C) | ✅ | Synthesized from scratch in `FactoryKit.cpp`, so it can ship. Uses 8.4 of the 10 s; Special > Load Factory Kit restores it |
+| Import original SP-1200 disk images (.hfe / raw .img) | ⬜ | The disk format isn't publicly documented. Needs a real disk image to reverse-engineer |
 
 ## SET-UP module
 
@@ -151,4 +154,4 @@ Legend: ✅ done in this build · 🟡 partial · ⬜ not started · ➖ hardwar
 
 - **Name.** "SP-1200" and "E-mu" are trademarks (E-mu is owned by Creative; Rossum sells the current SP-1200). The product can't use them in its name or branding. It can say "inspired by classic 12-bit samplers". Crate12 is a placeholder.
 - **Look.** The UI deliberately does not copy the SP-1200 panel trade dress.
-- **Sounds.** Don't ship the factory disks or other people's sample libraries. Ship sounds you record or license, or ship it empty and let users load their own.
+- **Sounds.** Decided: ship our own synthesized kit, and let users import factory sounds from disks they own. The original E-mu factory sounds are never bundled.
