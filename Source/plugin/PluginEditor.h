@@ -1,5 +1,7 @@
 #pragma once
 
+#include "EditorDialogs.h"
+#include "FrontPanel.h"
 #include "HardwareLookAndFeel.h"
 #include "PluginProcessor.h"
 
@@ -57,9 +59,20 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
 };
 
+// Button that tells a right-click apart from a normal click (right-click opens the quick menu).
+struct DualButton : public juce::TextButton
+{
+    using juce::TextButton::TextButton;
+    bool popupClick = false;
+    void clicked (const juce::ModifierKeys& m) override { popupClick = m.isPopupMenu(); }
+};
+
 class Crate12Editor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
+    friend class FrontPanel;
+    void startLampTest() { lampTestUntil = juce::Time::getMillisecondCounter() + 2500; }
+    bool keyPressed (const juce::KeyPress&) override;
     explicit Crate12Editor (Crate12Processor&);
     ~Crate12Editor() override;
     void paint (juce::Graphics&) override;
@@ -72,6 +85,7 @@ public:
     c12::Engine& engine() { return proc.getEngine(); }
     HardwareLookAndFeel& hardware() { return lnf; }
     void applyTheme (const Theme& t, bool remember);
+    void diskFunction (int hardwareNumber);   // DISK 0-9
 
 private:
     void showThemeMenu();
@@ -81,6 +95,7 @@ private:
     void showSetupMenu();
     void showSpecialMenu();
     void showDiskMenu();
+    void diskAction (int menuId);
     void showSegmentMenu();
     void showSongMenu();
     void showSampleMenu();
@@ -98,9 +113,16 @@ private:
     juce::OwnedArray<juce::TextButton> modeButtons;
 
     juce::TextButton runStop { "RUN/STOP" }, record { "RECORD" }, songSeg { "SEGMENT" },
-        tapTempo { "TAP TEMPO" }, tapRepeat { "TAP/REPEAT" }, eraseBtn { "ERASE" },
-        setupBtn { "SET-UP" }, specialBtn { "SPECIAL" }, diskBtn { "DISK" },
-        segmentBtn { "SEGMENT EDIT" }, songBtn { "SONG EDIT" }, sampleBtn { "SAMPLE" }, themeBtn { "THEME" };
+        tapTempo { "TAP TEMPO" }, tapRepeat { "TAP/REPEAT" }, eraseBtn { "ERASE" }, themeBtn { "THEME" };
+    DualButton setupBtn { "SET-UP" }, specialBtn { "SPECIAL" }, diskBtn { "DISK" },
+        segmentBtn { "STEP EDIT" }, songBtn { "SONG EDIT" }, sampleBtn { "SAMPLE" },
+        syncBtn { "SYNC" }, segLenBtn { "SEG LENGTH" }, stepBtn { "STEP PROG" }, copyBtn { "COPY" };
+    juce::OwnedArray<juce::TextButton> keypad;   // 1-9, NO, 0, YES, <, ENTER, >
+    juce::Rectangle<int> keypadFrame;
+    FrontPanel panel { *this };
+    juce::uint32 lampTestUntil = 0;
+    juce::Component::SafePointer<juce::DialogWindow> gridWindow, songWindow;
+    void openWindow (juce::Component::SafePointer<juce::DialogWindow>& slot, juce::Component* content, const juce::String& title);
     juce::Slider tempo, volume, number;
     juce::Label tempoLabel { {}, "TEMPO" }, volumeLabel { {}, "VOLUME" }, numberLabel { {}, "SEG #" };
     juce::Component::SafePointer<juce::DialogWindow> themeWindow;

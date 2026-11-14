@@ -287,6 +287,113 @@ int main()
         CHECK (r.run (4096) > 0.05f);
     }
 
+    // 13. SDS round trip: engine A dumps a sound, engine B receives it
+    {
+        Rig a, b;
+        auto d = makeDrum (6000, 220);
+        a.e.loadSound (3, d.data(), (int) d.size(), 44100, "SRC");
+        a.e.setLoop (3, true, 500);
+        a.e.sdsSend (3);
+        b.e.sdsArmReceive (12);
+        int msgs = 0;
+        for (;;)
+        {
+            auto out = a.e.takeSysexOut (8);
+            if (out.empty()) break;
+            for (auto& m : out) { b.e.handleSysex (m.data(), m.size()); ++msgs; }
+        }
+        std::lock_guard<std::recursive_mutex> l1 (a.e.mutex());
+        std::lock_guard<std::recursive_mutex> l2 (b.e.mutex());
+        auto& src = a.e.project().sounds[3];
+        auto& dst = b.e.project().sounds[12];
+        std::printf ("SDS: %d messages, %zu -> %zu samples\n", msgs, src.data.size(), dst.data.size());
+        CHECK (dst.data.size() >= src.data.size() - 2 && dst.data.size() <= src.data.size() + 2);
+        int maxErr = 0;
+        for (size_t i = 100; i < std::min (src.data.size(), dst.data.size()) - 100; ++i) maxErr = std::max (maxErr, std::abs (src.data[i] - dst.data[i]));
+        std::printf ("SDS max sample error: %d (12-bit units)\n", maxErr);
+        CHECK (maxErr <= 40);   // resampler + filter pass on receive
+        CHECK (dst.loop);
+    }
+
+    // 14. SMPTE: engine A writes LTC, engine B (SYNC 3) chases it
+    {
+        Rig a, b;
+        a.e.setSmpteRate (SmpteRate::Fps25);
+        b.e.setSmpteRate (SmpteRate::Fps25);
+        a.e.setSmpteStart (Engine::timecodeToFrames (1, 0, 0, 0, SmpteRate::Fps25));
+        b.e.setSmpteStart (Engine::timecodeToFrames (1, 0, 0, 0, SmpteRate::Fps25));
+        { std::lock_guard<std::recursive_mutex> l (a.e.mutex()); a.e.project().globals.masterLevel = 1.0f; }
+        b.e.setSyncMode (SyncMode::Smpte);
+        b.e.setTempo (120);
+        b.e.setSegmentLength (0, 4, 0, false);
+        b.e.play();     // armed
+        a.e.setSmpteWrite (true);
+        std::vector<float> L (kBlock), R (kBlock), bl (kBlock), br (kBlock);
+        float* none[8] {};
+        for (int k = 0; k < (int) (kSr * 2.0 / kBlock); ++k)
+        {
+            std::vector<MidiMsg> o1, o2;
+            a.e.process (nullptr, nullptr, L.data(), R.data(), none, kBlock, {}, o1, {});
+            b.e.process (L.data(), R.data(), bl.data(), br.data(), none, kBlock, {}, o2, {});
+        }
+        std::printf ("SMPTE chase: playing=%d tc=%s\n", (int) b.e.isPlaying(), b.e.smpteNow().c_str());
+        CHECK (b.e.isPlaying());
+        int bar = 0, beat = 0;
+        const int t = b.e.currentBeatInfo (bar, beat);
+        std::printf ("SMPTE position tick %d (expect ~%d)\n", t, (int) (2.0 * 2 * kPPQ));
+        CHECK (std::abs (t - 2 * 2 * kPPQ) < 40);
+        CHECK (b.e.smpteNow().rfind ("01:00:0", 0) == 0);
+    }
+
+    // 15. click sync: 24 ppq pulses at 120 BPM (every 1000 samples @ 48k)
+    {
+        Rig r;
+        r.e.setSyncMode (SyncMode::Click);
+        r.e.setSegmentLength (0, 1, 0, false);
+        for (int bt = 0; bt < 4; ++bt) r.e.stepInsert (0, bt * kPPQ, 0, 100);
+        r.e.play();
+        std::vector<float> in (1000, 0.0f), L (1000), R (1000);
+        in[0] = 0.9f; in[1] = 0.9f;
+        float* none[8] {};
+        int ons = 0;
+        for (int k = 0; k < 96; ++k)
+        {
+            std::vector<MidiMsg> o;
+            r.e.process (in.data(), in.data(), L.data(), R.data(), none, 1000, {}, o, {});
+            ons += countNoteOns (o);
+        }
+        std::printf ("click-sync note-ons over 1 bar: %d (expect 4)\n", ons);
+        CHECK (ons == 4);
+    }
+
+    // 16. song tempo, trigger out, per-pad tune/decay select
+    {
+        Rig r;
+        r.e.setSyncMode (SyncMode::Internal);
+        r.e.setTempo (100);
+        r.e.setSegmentLength (2, 1, 0, false);
+        r.e.songInsertStep (7, 0, { SongStep::Type::TriggerOut, 0, 0, 0 });
+        r.e.songInsertStep (7, 1, { SongStep::Type::Segment, 2, 0, 0 });
+        r.e.songInsertStep (7, 2, { SongStep::Type::End, 0, 0, 0 });
+        r.e.setSongTempo (7, 150);
+        r.e.setSong (7);
+        r.e.setSongMode (true);
+        std::vector<MidiMsg> out;
+        r.e.play();
+        r.run (4096, &out);
+        CHECK (std::fabs (r.e.getTempo() - 150.0) < 0.01);
+        CHECK (r.e.triggerOutCount() == 1);
+        r.e.stop();
+        r.e.setSongMode (false);
+        r.e.setDecaySelect (1, true);   // pad A2 slider = decay, A1 stays tune
+        r.e.setSlider (0, 1.0f);
+        r.e.setSlider (1, 0.25f);
+        std::lock_guard<std::recursive_mutex> l (r.e.mutex());
+        auto& w = r.e.project().working;
+        CHECK (std::fabs (w.pads[0].tune - kTuneMax) < 1e-4f);
+        CHECK (std::fabs (w.pads[1].decay - 0.25f) < 1e-4f);
+    }
+
     std::printf (failures ? "%d FAILURE(S)\n" : "ALL TESTS PASSED\n", failures);
     return failures ? 1 : 0;
 }

@@ -17,6 +17,64 @@ Crate12Processor::Crate12Processor() : AudioProcessor (makeBuses())
 {
     formats.registerBasicFormats();
     engine.loadFactoryKit();   // replaced by saved state when a project is reopened
+
+    using P = juce::AudioParameterFloat;
+    auto add = [this] (int idx, juce::RangedAudioParameter* prm) { params[idx] = prm; addParameter (prm); };
+    add (kParamMaster, new P (juce::ParameterID { "master", 1 }, "Master Volume", 0.0f, 1.0f, 0.8f));
+    for (int i = 0; i < 8; ++i)
+        add (kParamFader1 + i, new P (juce::ParameterID { "fader" + juce::String (i + 1), 1 }, "Fader " + juce::String (i + 1), 0.0f, 1.0f, 0.8f));
+    add (kParamCutoff, new P (juce::ParameterID { "cutoff12", 1 }, "Ch 1-2 Filter Cutoff", 0.0f, 1.0f, 0.7f));
+    add (kParamReso, new P (juce::ParameterID { "reso12", 1 }, "Ch 1-2 Filter Resonance", 0.0f, 1.0f, 0.15f));
+    add (kParamDrive, new P (juce::ParameterID { "drive", 1 }, "Output Drive", 0.1f, 5.0f, 1.0f));
+    add (kParamTempo, new P (juce::ParameterID { "tempo", 1 }, "Tempo (internal sync)", juce::NormalisableRange<float> ((float) kMinTempo, (float) kMaxTempo, 0.1f), 90.0f));
+    add (kParamSwing, new juce::AudioParameterChoice (juce::ParameterID { "swing", 1 }, "Swing", { "50%", "54%", "58%", "63%", "67%", "71%" }, 0));
+    pushAllParamsFromEngine();
+}
+
+void Crate12Processor::pushParam (int index, float v)
+{
+    if (index < 0 || index >= kNumParams || params[index] == nullptr) return;
+    lastSeen[index] = v;
+    const float norm = params[index]->convertTo0to1 (v);
+    if (std::abs (params[index]->getValue() - norm) > 1.0e-6f)
+        params[index]->setValueNotifyingHost (norm);
+}
+
+void Crate12Processor::pushAllParamsFromEngine()
+{
+    Globals g;
+    { std::lock_guard<std::recursive_mutex> l (engine.mutex()); g = engine.project().globals; }
+    pushParam (kParamMaster, g.masterLevel);
+    for (int i = 0; i < 8; ++i) pushParam (kParamFader1 + i, engine.getSlider (i));
+    pushParam (kParamCutoff, g.filter12Cutoff);
+    pushParam (kParamReso, g.filter12Reso);
+    pushParam (kParamDrive, g.outputDrive);
+    pushParam (kParamTempo, (float) g.tempo);
+    pushParam (kParamSwing, (float) g.swingIndex);
+}
+
+void Crate12Processor::applyParamChanges()
+{
+    for (int i = 0; i < kNumParams; ++i)
+    {
+        if (params[i] == nullptr) continue;
+        const float v = params[i]->convertFrom0to1 (params[i]->getValue());
+        if (std::abs (v - lastSeen[i]) < 1.0e-5f) continue;
+        lastSeen[i] = v;
+        if (i >= kParamFader1 && i < kParamFader1 + 8) { engine.setSlider (i - kParamFader1, v); continue; }
+        std::lock_guard<std::recursive_mutex> l (engine.mutex());
+        auto& g = engine.project().globals;
+        switch (i)
+        {
+            case kParamMaster: g.masterLevel = v; break;
+            case kParamCutoff: g.filter12Cutoff = v; break;
+            case kParamReso:   g.filter12Reso = v; break;
+            case kParamDrive:  g.outputDrive = v; break;
+            case kParamTempo:  g.tempo = std::round (v * 10.0f) / 10.0; break;
+            case kParamSwing:  g.swingIndex = juce::jlimit (0, 5, (int) std::lround (v)); break;
+            default: break;
+        }
+    }
 }
 
 bool Crate12Processor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -66,11 +124,14 @@ void Crate12Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     }
     buffer.clear();
 
+    applyParamChanges();
+
     midiIn.clear();
     for (const auto meta : midi)
     {
         const auto m = meta.getMessage();
-        if (m.getRawDataSize() > 3 || m.getRawDataSize() < 1) continue;   // sysex (SDS) handled later
+        if (m.isSysEx()) { engine.handleSysex (m.getRawData(), (size_t) m.getRawDataSize()); continue; }   // SDS
+        if (m.getRawDataSize() > 3 || m.getRawDataSize() < 1) continue;
         MidiMsg mm; mm.offset = meta.samplePosition; mm.size = (uint8_t) m.getRawDataSize();
         for (int i = 0; i < mm.size; ++i) mm.bytes[i] = m.getRawData()[i];
         midiIn.push_back (mm);
@@ -115,6 +176,10 @@ void Crate12Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 
     for (auto& m : midiOut)
         midi.addEvent (juce::MidiMessage (m.bytes, m.size, 0.0), juce::jlimit (0, n - 1, m.offset));
+
+    // MIDI Sample Dump packets, throttled so receivers keep up (about 4 packets per block)
+    for (auto& sx : engine.takeSysexOut (4))
+        midi.addEvent (juce::MidiMessage (sx.data(), (int) sx.size(), 0.0), n - 1);
 }
 
 juce::AudioProcessorEditor* Crate12Processor::createEditor() { return new Crate12Editor (*this); }
@@ -128,7 +193,10 @@ void Crate12Processor::getStateInformation (juce::MemoryBlock& dest)
 void Crate12Processor::setStateInformation (const void* data, int size)
 {
     if (data != nullptr && size > 0)
+    {
         engine.loadDisk (static_cast<const uint8_t*> (data), (size_t) size, kDiskAll);
+        pushAllParamsFromEngine();
+    }
 }
 
 bool Crate12Processor::loadSampleFile (const juce::File& file, int sound)

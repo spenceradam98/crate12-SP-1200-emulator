@@ -118,6 +118,25 @@ public:
     void setSyncMode (SyncMode m);
     void setSmpteRate (SmpteRate r);
     void setFilterEnvelopes (bool on);
+    void setDecaySelect (int sound, bool decay);       // SET-UP 18 per pad
+    void setSongTempo (int song, double bpm);          // 0 = none
+    void setSmpteStart (int64_t frames);
+    void setSmpteWrite (bool on);                      // SPECIAL 14: LTC on the main output
+    bool isSmpteWriting() const { return ltcWriteOn; }
+    std::string smpteNow();                            // last timecode read or written, HH:MM:SS:FF
+
+    // ------------------------------------------------------------ MIDI Sample Dump Standard (SPECIAL 23/24)
+    void sdsSend (int sound);
+    void sdsArmReceive (int sound);                    // -1 = disarm (then dumps go to sample number % 32)
+    int  sdsReceiveTarget() const { return sdsRxTarget; }
+    void handleSysex (const uint8_t* data, size_t size);
+    std::vector<std::vector<uint8_t>> takeSysexOut (int maxMessages);
+    int  sdsProgress() const { return sdsProgressPct.load(); }   // 0..100 while a dump runs, -1 idle
+
+    // timecode helpers (also used by the UI)
+    static int fpsOf (SmpteRate r);
+    static std::string framesToTimecode (int64_t frames, SmpteRate r);
+    static int64_t timecodeToFrames (int h, int m, int s, int f, SmpteRate r);
 
     // ------------------------------------------------------------ sampling
     enum class SampleState { Idle, Armed, Recording };
@@ -177,6 +196,11 @@ private:
     int  multiSound() const { return multiSource; }
     void updateDefaultLcd();
     void emitNote (int sound, int velocity, int offset);
+    void externalClockPulse (bool start);
+    void ltcDecodeSample (float x);
+    void onLtcFrame (int64_t frames);
+    float ltcGenerateSample();
+    void sdsFinishReceive();
 
     std::recursive_mutex mtx;
     Project proj;
@@ -228,6 +252,22 @@ private:
     std::vector<MidiMsg>* midiOutPtr = nullptr;
     std::vector<int64_t> tapTimes;
     std::vector<MidiMsg> queuedUiMidi;   // start/stop sent from the UI thread
+
+    // click sync (SYNC 4)
+    bool clickHigh = false;
+    // SMPTE / LTC (SYNC 3 + SPECIAL 14)
+    bool ltcSignHigh = false; double ltcLastEdge = 0, ltcBitLen = 0; bool ltcHalf = false;
+    std::array<uint8_t, 80> ltcBits {}; int64_t ltcLastFrame = -1, ltcLastFrameSample = -1, ltcPrevFrame = -1;
+    bool ltcWriteOn = false; int64_t ltcOutFrame = 0; double ltcOutPhase = 0; int ltcOutBit = 0; float ltcOutLevel = 1.0f;
+    std::array<uint8_t, 80> ltcOutBits {}; float ltcOutSmooth = 0;
+    int64_t lastTimecodeShown = 0;
+    // SDS
+    int sdsRxTarget = -1;
+    int loopStartRx = -1, loopEndRx = 0;
+    struct SdsRx { bool active = false; int sampleNo = 0, bits = 12, nextPacket = 0; double rate = kNativeRate; int length = 0; std::vector<float> data; } sdsRx;
+    std::vector<std::vector<uint8_t>> sysexOut;
+    std::atomic<int> sdsProgressPct { -1 };
+    size_t sdsTxTotal = 0;
 
     // metronome
     float clickEnv = 0, clickPhase = 0, clickFreq = 1000;

@@ -39,12 +39,21 @@ public:
     bool loadSampleFile (const juce::File& file, int sound);
     bool exportSoundToWav (int sound, const juce::File& file);
 
+    // DAW automation. Index: 0 master, 1-8 faders, 9 ch1-2 cutoff, 10 ch1-2 resonance, 11 drive, 12 tempo, 13 swing
+    enum { kParamMaster = 0, kParamFader1 = 1, kParamCutoff = 9, kParamReso, kParamDrive, kParamTempo, kParamSwing, kNumParams };
+    // Called when the UI (or loaded state) changes a value, so the host sees it without re-applying it.
+    void pushParam (int index, float plainValue);
+    void pushAllParamsFromEngine();
+
 private:
     static BusesProperties makeBuses();
     c12::Engine engine;
     juce::AudioFormatManager formats;
     std::vector<float> inL, inR;
     std::vector<c12::MidiMsg> midiIn, midiOut;
+    juce::RangedAudioParameter* params[kNumParams] {};
+    float lastSeen[kNumParams] {};
+    void applyParamChanges();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Crate12Processor)
 };

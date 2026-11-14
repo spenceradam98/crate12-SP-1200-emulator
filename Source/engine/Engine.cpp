@@ -146,10 +146,26 @@ void Engine::process (const float* inL, const float* inR, float* mainL, float* m
         while (mi < midiIn.size() && midiIn[mi].offset <= i)
             handleMidi (midiIn[mi++]);
 
+        // ---- external sync from the audio input (click pulses or SMPTE/LTC)
+        const float rawIn = 0.5f * ((inL ? inL[i] : 0.0f) + (inR ? inR[i] : 0.0f));
+        if (g.syncMode == SyncMode::Click)
+        {
+            if (! clickHigh && rawIn > g.syncInputThreshold) { clickHigh = true; externalClockPulse (false); }
+            else if (clickHigh && rawIn < g.syncInputThreshold * 0.5f) clickHigh = false;
+            if (playing && lastClockSample >= 0 && sampleCounter + i - lastClockSample > (int64_t) sr)
+            { stopPlayback (i); midiWaiting = true; }
+        }
+        else if (g.syncMode == SyncMode::Smpte)
+        {
+            ltcDecodeSample (rawIn);
+            if (playing && ltcLastFrameSample >= 0 && sampleCounter + i - ltcLastFrameSample > (int64_t) (0.3 * sr))
+            { stopPlayback (i); midiWaiting = true; }
+        }
+
         // ---- sequencer clock
         if (playing && ! midiWaiting)
         {
-            if (g.syncMode == SyncMode::Midi)
+            if (g.syncMode == SyncMode::Midi || g.syncMode == SyncMode::Click)
             {
                 if (absTick < midiClockCount * (kPPQ / 24) + (kPPQ / 24) - 1)
                     tickFrac += midiTicksPerSample;
@@ -209,6 +225,12 @@ void Engine::process (const float* inL, const float* inR, float* mainL, float* m
             if (clickPhase > 2.0f * (float) kPi) clickPhase -= 2.0f * (float) kPi;
             clickEnv *= (float) std::exp (-1.0 / (0.012 * sr));
             L += c; R += c;
+        }
+
+        if (ltcWriteOn)
+        {
+            const float v = ltcGenerateSample() * 0.5f;   // SPECIAL 14: LTC printed to the main outs
+            L += v; R += v;
         }
 
         if (mainL) mainL[i] = dcL.process (L) * g.masterLevel;
@@ -424,6 +446,10 @@ void Engine::setSlider (int i, float v)
         case SliderMode::Mix:   p.level = v; break;
         case SliderMode::Tune:  p.tune = kTuneMin + v * (kTuneMax - kTuneMin); break;
         case SliderMode::Decay: p.decay = v; break;
+        case SliderMode::TuneDecay:
+            if (proj.working.decaySelect[(size_t) soundIndex (bank, i)]) p.decay = v;
+            else p.tune = kTuneMin + v * (kTuneMax - kTuneMin);
+            break;
         default: break;
     }
 }
@@ -442,6 +468,8 @@ float Engine::getSlider (int i)
     {
         case SliderMode::Tune:  return (p.tune - kTuneMin) / (kTuneMax - kTuneMin);
         case SliderMode::Decay: return p.decay;
+        case SliderMode::TuneDecay:
+            return proj.working.decaySelect[(size_t) soundIndex (bank, i)] ? p.decay : (p.tune - kTuneMin) / (kTuneMax - kTuneMin);
         default:                return p.level;
     }
 }
@@ -677,7 +705,17 @@ bool Engine::advanceSong (bool dryRun)
                 }
                 break;
             case SongStep::Type::TriggerOut:
-                if (! dryRun) triggerOuts.fetch_add (1);
+                if (! dryRun)
+                {
+                    triggerOuts.fetch_add (1);
+                    clickEnv = 1.0f; clickFreq = 3000.0f; clickPhase = 0;
+                    if (proj.globals.triggerOutMidi && midiOutPtr)
+                    {
+                        const auto chn = (uint8_t) proj.globals.midiChannel;
+                        midiOutPtr->push_back (MidiMsg::make (curOffset, (uint8_t) (0x90 | chn), proj.globals.triggerNote, 127));
+                        pendingOffs.push_back ({ sampleCounter + curOffset + (int64_t) (sr * 0.02), proj.globals.triggerNote, chn });
+                    }
+                }
                 break;
             case SongStep::Type::End:
                 if (! callStack.empty())
@@ -687,7 +725,12 @@ bool Engine::advanceSong (bool dryRun)
                     break;
                 }
                 if (st.a == 1) { songStep = -1; repeatStack.clear(); break; }
-                if (st.a == 2) { curSong = clampv (st.b, 0, kNumSongs - 1); songStep = -1; repeatStack.clear(); break; }
+                if (st.a == 2)
+                {
+                    curSong = clampv (st.b, 0, kNumSongs - 1); songStep = -1; repeatStack.clear();
+                    if (! dryRun && proj.songs[(size_t) curSong.load()].tempo > 0) proj.globals.tempo = proj.songs[(size_t) curSong.load()].tempo;
+                    break;
+                }
                 return false;
         }
     }
@@ -726,7 +769,16 @@ void Engine::startPlayback (int64_t abs, int offset, bool sendStart)
         return;
     }
     rampTicksLeft = 0; tempoOffset = 0;
-    locate (abs);
+    if (songMode && proj.songs[(size_t) curSong.load()].tempo > 0) proj.globals.tempo = proj.songs[(size_t) curSong.load()].tempo;
+    if (songMode && abs == 0)
+    {
+        // starting from the top: run the opening steps for real (mix/tempo changes, triggers)
+        absTick = 0; tickFrac = 0; segTick = 0;
+        songStep = proj.firstSongStep - 1;
+        repeatStack.clear(); callStack.clear();
+        if (! advanceSong (false)) { setLcd ("Song is empty", ""); return; }
+    }
+    else locate (abs);
     for (auto& s : proj.segments) for (auto& e : s.events) e.skipOnce = false;
     playing = true;
     midiWaiting = false;
@@ -765,10 +817,11 @@ void Engine::runStop()
 void Engine::play (bool fromStart)
 {
     Lock l (mtx);
-    if (proj.globals.syncMode == SyncMode::Midi)
+    const auto sm = proj.globals.syncMode;
+    if (sm == SyncMode::Midi || sm == SyncMode::Click || sm == SyncMode::Smpte)
     {
         midiWaiting = true;      // "ready" mode, sync light flashes until the master starts
-        setLcd ("Waiting for", "MIDI Start");
+        setLcd ("Waiting for", sm == SyncMode::Midi ? "MIDI Start" : sm == SyncMode::Click ? "Click" : "SMPTE");
         return;
     }
     std::vector<MidiMsg> tmp;
@@ -1058,6 +1111,23 @@ void Engine::channelAssign (int s, int c)
 }
 
 void Engine::setTuneDecayMode (bool tune) { setSliderMode (tune ? SliderMode::Tune : SliderMode::Decay); }
+
+void Engine::setDecaySelect (int sound, bool decay)
+{
+    Lock l (mtx);
+    sound = clampv (sound, 0, kNumSounds - 1);
+    proj.working.decaySelect[(size_t) sound] = decay ? 1 : 0;
+    sliderMode = SliderMode::TuneDecay;
+    setLcd (fmt ("Sound %c%d", bankLetter (sound / 8), sound % 8 + 1), decay ? "Slider = Decay" : "Slider = Tune");
+}
+
+void Engine::setSongTempo (int song, double bpm)
+{
+    Lock l (mtx);
+    proj.songs[(size_t) clampv (song, 0, kNumSongs - 1)].tempo = bpm <= 0 ? 0.0 : clampv (bpm, kMinTempo, kMaxTempo);
+}
+
+void Engine::setSmpteStart (int64_t frames) { Lock l (mtx); proj.globals.smpteStartFrames = std::max<int64_t> (0, frames); }
 
 void Engine::setTruncation (int s, int start, int end)
 {

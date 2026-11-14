@@ -99,6 +99,20 @@ std::vector<uint8_t> serializeProject (const Project& p, int sections)
         }
         w.endChunk (c);
     }
+    if (sections & kDiskGlobals)
+    {
+        const auto c = w.beginChunk ("GLB2");
+        w.f32 (p.globals.syncInputThreshold); w.u8 (p.globals.triggerOutMidi); w.u8 (p.globals.triggerNote);
+        w.endChunk (c);
+    }
+    if (sections & kDiskSequences)
+    {
+        const auto c = w.beginChunk ("SEQ2");
+        for (const auto& s : p.songs) w.f64 (s.tempo);
+        for (auto d : p.working.decaySelect) w.u8 (d);
+        for (const auto& m : p.mixes) for (auto d : m.decaySelect) w.u8 (d);
+        w.endChunk (c);
+    }
     return w.b;
 }
 
@@ -184,6 +198,16 @@ bool deserializeProject (Project& p, const uint8_t* data, size_t size, int* foun
                 }
             }
             if (c.ok && found) *found |= kDiskSequences;
+        }
+        else if (t == "GLB2")
+        {
+            p.globals.syncInputThreshold = c.f32(); p.globals.triggerOutMidi = c.u8(); p.globals.triggerNote = c.u8() & 0x7F;
+        }
+        else if (t == "SEQ2")
+        {
+            for (auto& s : p.songs) { s.tempo = c.f64(); if (! (s.tempo >= 0 && s.tempo <= kMaxTempo)) s.tempo = 0; }
+            for (auto& d : p.working.decaySelect) d = c.u8() ? 1 : 0;
+            for (auto& m : p.mixes) for (auto& d : m.decaySelect) d = c.u8() ? 1 : 0;
         }
         if (! c.ok) return false;
         r.pos += len;

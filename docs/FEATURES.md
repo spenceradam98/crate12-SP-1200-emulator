@@ -57,10 +57,9 @@ Legend: ✅ done in this build · 🟡 partial · ⬜ not started · ➖ hardwar
 | 18 | Tune/Decay slider select | ✅ |
 | 19 | Truncate and loop (+ make truncation permanent) | ✅ |
 | 20 | Delete Sound | ✅ |
-| 21 | First song step *(verify name/number)* | ✅ |
+| 21 | First song step | ✅ |
 | 22 | MIDI channel, Omni/Poly, pitch keys | ✅ |
 | 23 | Special menu | ✅ |
-| 24-28 | Remaining set-up numbers | ⬜ *(verify against manual)* |
 
 ## SPECIAL functions
 
@@ -68,15 +67,18 @@ Legend: ✅ done in this build · 🟡 partial · ⬜ not started · ➖ hardwar
 |---|---|---|
 | 12 | Clear all memory | ✅ |
 | 13 | Check remaining memory | ✅ |
-| 14 | Write SMPTE to tape | ➖ host timecode replaces it |
+| 14 | Write SMPTE to tape | ✅ LTC written to the main outs at the chosen rate and start time |
 | 15 | Clear all sounds | ✅ |
 | 16 | Clear all sequences | ✅ |
 | 17 | Copy sound | ✅ |
 | 18 | Swap sound | ✅ |
 | 19 | Default decay for all sounds | ✅ |
 | 22 | Dynamic allocation per channel pair | ✅ |
-| — | Reverse sound, name sound | ✅ |
-| — | Remaining special numbers | ⬜ *(verify against manual)* |
+| 21 | Name sound | ✅ |
+| 23 | Transmit sound (MIDI Sample Dump) | ✅ |
+| 24 | Receive sound (MIDI Sample Dump) | ✅ |
+| 99 | Lamp test | ✅ |
+| — | Reverse sound | ✅ extension |
 
 ## Sequencer (segments)
 
@@ -95,7 +97,7 @@ Legend: ✅ done in this build · 🟡 partial · ⬜ not started · ➖ hardwar
 | Real-time erase (ERASE + pad) | ✅ | |
 | Erase segment / erase sound from segment | ✅ | |
 | Copy segment, append mode | ✅ | |
-| Step program | 🟡 | Insert/erase by step number works; a proper step-edit screen is next |
+| Step program | ✅ | Keypad step program (cursor on the auto-correct grid, pad inserts, ERASE + pad deletes) plus a clickable step-edit grid window |
 
 ## Song mode
 
@@ -107,7 +109,9 @@ Legend: ✅ done in this build · 🟡 partial · ⬜ not started · ➖ hardwar
 | Mix change | ✅ |
 | Tempo change (accelerando/ritardando over N beats) | ✅ |
 | Sub-song with return | ✅ |
-| Trigger out step | 🟡 counted, not yet sent anywhere (could send a MIDI note) |
+| Trigger out step | ✅ sends a MIDI note (set-up menu picks it) and a click pulse |
+| Per-song tempo | ✅ |
+| Song editor window (insert, delete, move, clear) | ✅ |
 | END: stop / repeat / link to song | ✅ |
 | Start at a given step | ✅ |
 
@@ -117,14 +121,15 @@ Legend: ✅ done in this build · 🟡 partial · ⬜ not started · ➖ hardwar
 |---|---|---|
 | Sync 1 Internal | ✅ | |
 | Sync 2 MIDI clock, start/stop/continue, song position pointer, ready mode | ✅ | |
-| Sync 3 SMPTE (24/25/30/30df) | ➖ | Frame rate setting stored. In a DAW "Host" sync replaces it |
-| Sync 4 Click (24 ppq audio in) | ⬜ | Could read a click from the audio input |
+| Sync 3 SMPTE (24/25/30/30df) | ✅ | Reads LTC from the audio input and chases it; start time set as HH:MM:SS:FF |
+| Sync 4 Click (24 ppq audio in) | ✅ | Reads a click from the audio input, threshold adjustable |
 | Host sync (DAW transport) | ✅ | Extension |
 | MIDI in notes -> pads, Omni/Poly, velocity | ✅ | Per-sound note map |
 | Pitch keys (G#3-B4 play one sound at 16 pitches) | ✅ | |
 | MIDI out notes | ✅ | |
 | MIDI out clock, start/stop, SPP | ✅ | |
-| MIDI Sample Dump Standard in/out | ⬜ | Next up |
+| MIDI Sample Dump Standard in/out | ✅ | Send, receive with handshakes, answers dump requests, keeps loop points |
+| DAW automation | ✅ | Master, 8 faders, cutoff, resonance, drive, tempo, swing |
 
 ## DISK module
 
@@ -137,18 +142,16 @@ Legend: ✅ done in this build · 🟡 partial · ⬜ not started · ➖ hardwar
 | 4 | Load segment # | ✅ |
 | 5 | Load sounds | ✅ |
 | 6 | Load sound # | ✅ |
-| 7/8 | Catalog sequences / sounds | 🟡 shown in the load prompts, no browser yet |
+| 7/8 | Catalog sequences / sounds | ✅ browser window |
 | 9 | Format / copy software | ➖ |
 | Plugin state saved with the DAW project | ✅ | |
 
 ## Still to do
 
-1. Faithful front-panel keypad flow (type a set-up number, then the LCD walks you through it like the hardware).
-2. MIDI Sample Dump Standard, click sync, trigger out, catalog browser.
-3. A step-edit screen and a song editor that is easier than menus.
-4. Fill the *(verify)* gaps from the full manual and tune the filters and output stage against recordings of a real unit.
-5. DAW automation parameters.
-6. Installers for macOS (Intel and Apple Silicon, macOS 11+) and Windows, at the end alongside the other plugins.
+1. Import original SP-1200 floppy images (.hfe / .img). Needs a real disk image to work out the format.
+2. Tune the ch 3-6 filter cutoffs and the output stage against recordings of a real unit. Current values are estimates.
+3. Test inside real DAWs and on macOS 11 (Intel). So far it has only been built and run on Linux.
+4. Installers for macOS (Intel and Apple Silicon, macOS 11+) and Windows, at the end alongside the other plugins.
 
 ## Decisions for Adam
 

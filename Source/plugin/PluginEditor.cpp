@@ -59,7 +59,12 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
 
         auto* s = sliders.add (new juce::Slider (juce::Slider::LinearVertical, juce::Slider::NoTextBox));
         s->setRange (0.0, 1.0);
-        s->onValueChange = [this, i, s] { if (! updating) engine().setSlider (i, (float) s->getValue()); };
+        s->onValueChange = [this, i, s] {
+            if (updating) return;
+            if (panel.slider (i, (float) s->getValue())) return;      // a keypad function owns the sliders
+            engine().setSlider (i, (float) s->getValue());
+            proc.pushParam (Crate12Processor::kParamFader1 + i, (float) s->getValue());
+        };
         addAndMakeVisible (s);
         auto* l = sliderLabels.add (new juce::Label ({}, juce::String (i + 1)));
         l->setJustificationType (juce::Justification::centred);
@@ -75,11 +80,11 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
         addAndMakeVisible (bb);
     }
 
-    const char* modeNames[] = { "MIX", "TUNE", "DECAY", "MULTI PITCH", "MULTI LEVEL", "MULTI DECAY", "EXIT MULTI" };
-    for (int m = 0; m < 7; ++m)
+    const char* modeNames[] = { "MIX", "TUNE", "DECAY", "MULTI PITCH", "MULTI LEVEL", "MULTI DECAY", "EXIT MULTI", "TUNE/DECAY" };
+    for (int m = 0; m < 8; ++m)
     {
         auto* mb = modeButtons.add (new juce::TextButton (modeNames[m]));
-        if (m < 6) mb->getProperties().set ("led", true);
+        if (m != 6) mb->getProperties().set ("led", true);
         mb->onClick = [this, m] {
             auto& e = engine();
             switch (m)
@@ -90,6 +95,7 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
                 case 3: e.enterMultiMode (SliderMode::MultiPitch); break;
                 case 4: e.enterMultiMode (SliderMode::MultiLevel); break;
                 case 5: e.enterMultiMode (SliderMode::MultiDecay); break;
+                case 7: e.exitMultiMode(); e.setSliderMode (SliderMode::TuneDecay); break;
                 default: e.exitMultiMode(); break;
             }
             syncControlsFromEngine();
@@ -97,9 +103,19 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
         addAndMakeVisible (mb);
     }
 
-    for (auto* b : { &runStop, &record, &songSeg, &tapTempo, &tapRepeat, &eraseBtn, &setupBtn, &specialBtn,
-                     &diskBtn, &segmentBtn, &songBtn, &sampleBtn, &defineMix, &themeBtn })
+    for (juce::TextButton* b : std::initializer_list<juce::TextButton*> { &runStop, &record, &songSeg, &tapTempo, &tapRepeat, &eraseBtn, &setupBtn, &specialBtn,
+                     &diskBtn, &segmentBtn, &songBtn, &sampleBtn, &defineMix, &themeBtn, &syncBtn, &segLenBtn, &stepBtn, &copyBtn })
         addAndMakeVisible (b);
+    const char* keyNames[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "NO", "0", "YES", "<", "ENTER", ">" };
+    const int keyCodes[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, FrontPanel::No, 0, FrontPanel::Yes, FrontPanel::Left, FrontPanel::Enter, FrontPanel::Right };
+    for (int k = 0; k < 15; ++k)
+    {
+        auto* kb = keypad.add (new juce::TextButton (keyNames[k]));
+        const int code = keyCodes[k];
+        kb->onClick = [this, code] { panel.key (code); syncControlsFromEngine(); };
+        addAndMakeVisible (kb);
+    }
+    setWantsKeyboardFocus (true);
     for (auto* b : { &runStop, &record, &songSeg, &eraseBtn }) b->getProperties().set ("led", true);
     themeBtn.onClick = [this] { showThemeMenu(); };
 
@@ -109,12 +125,17 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
     tapTempo.onClick = [this] { engine().tapTempo(); syncControlsFromEngine(); };
     tapRepeat.onStateChange = [this] { engine().setTapRepeat (tapRepeat.isDown()); };
     eraseBtn.onStateChange = [this] { engine().setEraseHeld (eraseBtn.isDown()); };
-    setupBtn.onClick = [this] { showSetupMenu(); };
-    specialBtn.onClick = [this] { showSpecialMenu(); };
-    diskBtn.onClick = [this] { showDiskMenu(); };
-    segmentBtn.onClick = [this] { showSegmentMenu(); };
-    songBtn.onClick = [this] { showSongMenu(); };
-    sampleBtn.onClick = [this] { showSampleMenu(); };
+    // Left-click: hardware keypad flow. Right-click: quick menu.
+    setupBtn.onClick = [this] { if (setupBtn.popupClick) showSetupMenu(); else panel.start (FrontPanel::Module::Setup); };
+    specialBtn.onClick = [this] { if (specialBtn.popupClick) showSpecialMenu(); else panel.start (FrontPanel::Module::Special); };
+    diskBtn.onClick = [this] { if (diskBtn.popupClick) showDiskMenu(); else panel.start (FrontPanel::Module::Disk); };
+    sampleBtn.onClick = [this] { if (sampleBtn.popupClick) showSampleMenu(); else panel.start (FrontPanel::Module::Sample); };
+    syncBtn.onClick = [this] { panel.start (FrontPanel::Module::Sync); };
+    segLenBtn.onClick = [this] { if (segLenBtn.popupClick) showSegmentMenu(); else panel.start (FrontPanel::Module::SegLength); };
+    stepBtn.onClick = [this] { panel.start (FrontPanel::Module::Step); };
+    copyBtn.onClick = [this] { panel.start (FrontPanel::Module::Copy); };
+    segmentBtn.onClick = [this] { if (segmentBtn.popupClick) showSegmentMenu(); else openWindow (gridWindow, new StepGridEditor (engine()), "Step edit"); };
+    songBtn.onClick = [this] { if (songBtn.popupClick) showSongMenu(); else openWindow (songWindow, new SongEditor (engine()), "Song editor"); };
     defineMix.onClick = [this] { engine().defineMix (mixSel.getSelectedItemIndex()); };
 
     tempo.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
@@ -124,9 +145,13 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
     volume.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     volume.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     volume.setRange (0.0, 1.0);
-    volume.onValueChange = [this] { if (! updating) { Lock l (engine().mutex()); engine().project().globals.masterLevel = (float) volume.getValue(); } };
+    volume.onValueChange = [this] {
+        if (updating) return;
+        { Lock l (engine().mutex()); engine().project().globals.masterLevel = (float) volume.getValue(); }
+        proc.pushParam (Crate12Processor::kParamMaster, (float) volume.getValue());
+    };
     addAndMakeVisible (volume);
-    tempo.onValueChange = [this] { if (! updating) engine().setTempo (tempo.getValue()); };
+    tempo.onValueChange = [this] { if (! updating) { engine().setTempo (tempo.getValue()); proc.pushParam (Crate12Processor::kParamTempo, (float) tempo.getValue()); } };
     number.setSliderStyle (juce::Slider::IncDecButtons);
     number.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 40, 22);
     number.setRange (0, 99, 1);
@@ -138,15 +163,14 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
     addAndMakeVisible (tempo); addAndMakeVisible (number);
 
     for (int i = 0; i < 6; ++i) swing.addItem (juce::String (kSwingValues[(size_t) i]) + "%", i + 1);
-    swing.onChange = [this] { if (! updating) engine().setSwing (swing.getSelectedItemIndex()); };
+    swing.onChange = [this] { if (! updating) { engine().setSwing (swing.getSelectedItemIndex()); proc.pushParam (Crate12Processor::kParamSwing, (float) swing.getSelectedItemIndex()); } };
     for (int i = 0; i <= 8; ++i) autoCorrect.addItem (autoCorrectName ((AutoCorrect) i), i + 1);
     autoCorrect.onChange = [this] { if (! updating) engine().setAutoCorrect ((AutoCorrect) autoCorrect.getSelectedItemIndex()); };
     const char* metNames[] = { "Off", "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T", "Click 24ppq" };
     for (int i = 0; i < 10; ++i) metronome.addItem (metNames[i], i + 1);
     metronome.onChange = [this] { if (! updating) engine().setMetronome ((Metronome) metronome.getSelectedItemIndex()); };
-    syncMode.addItem ("Internal", 1); syncMode.addItem ("MIDI", 2); syncMode.addItem ("SMPTE (n/a)", 3);
-    syncMode.addItem ("Click (n/a)", 4); syncMode.addItem ("Host", 5);
-    syncMode.setItemEnabled (3, false); syncMode.setItemEnabled (4, false);
+    syncMode.addItem ("Internal", 1); syncMode.addItem ("MIDI", 2); syncMode.addItem ("SMPTE (audio in)", 3);
+    syncMode.addItem ("Click (audio in)", 4); syncMode.addItem ("Host", 5);
     syncMode.onChange = [this] { if (! updating) engine().setSyncMode ((SyncMode) syncMode.getSelectedId()); };
     for (int i = 0; i < kNumMixes; ++i) mixSel.addItem ("Mix " + juce::String (i + 1), i + 1);
     mixSel.onChange = [this] { if (! updating) engine().selectMix (mixSel.getSelectedItemIndex()); };
@@ -161,16 +185,38 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
     for (auto* l : sliderLabels) l->setFont (juce::FontOptions (12.0f, juce::Font::bold));
 
     setResizable (true, true);
-    setResizeLimits (1100, 640, 2200, 1300);
-    setSize (1180, 680);
+    setResizeLimits (1240, 660, 2400, 1400);
+    setSize (1320, 700);
     syncControlsFromEngine();
     startTimerHz (30);
+
+    // Developer aid for screenshots: CRATE12_OPEN=grid|song, CRATE12_KEYS=<module letter><digits> (S=set-up, P=special)
+    if (auto* open = std::getenv ("CRATE12_OPEN"))
+    {
+        const juce::String w (open);
+        juce::Timer::callAfterDelay (600, [sp = juce::Component::SafePointer<Crate12Editor> (this), w] {
+            if (sp == nullptr) return;
+            if (w == "grid") sp->openWindow (sp->gridWindow, new StepGridEditor (sp->engine()), "Step edit");
+            if (w == "song") sp->openWindow (sp->songWindow, new SongEditor (sp->engine()), "Song editor");
+        });
+    }
+    if (auto* keys = std::getenv ("CRATE12_KEYS"))
+    {
+        const juce::String k (keys);
+        juce::Timer::callAfterDelay (600, [sp = juce::Component::SafePointer<Crate12Editor> (this), k] {
+            if (sp == nullptr || k.isEmpty()) return;
+            sp->panel.start (k[0] == 'P' ? FrontPanel::Module::Special : FrontPanel::Module::Setup);
+            for (int i = 1; i < k.length(); ++i) sp->panel.key (k[i] - '0');
+        });
+    }
 }
 
 Crate12Editor::~Crate12Editor()
 {
     stopTimer();
     if (themeWindow != nullptr) delete themeWindow.getComponent();
+    if (gridWindow != nullptr) delete gridWindow.getComponent();
+    if (songWindow != nullptr) delete songWindow.getComponent();
     setLookAndFeel (nullptr);
 }
 
@@ -208,6 +254,7 @@ void Crate12Editor::paint (juce::Graphics& g)
     frame (performFrame, "PERFORMANCE");
     frame (sliderFrame, "LEVEL / TUNE / DECAY");
     frame (padFrame, "");
+    frame (keypadFrame, "KEYPAD");
 
     // screws
     const float m = 10.0f;
@@ -253,7 +300,7 @@ void Crate12Editor::resized()
     for (auto* b : { &runStop, &record, &songSeg, &tapTempo, &tapRepeat, &eraseBtn }) b->setBounds (row1.removeFromLeft (bw).reduced (2));
     top.removeFromTop (4);
     auto row2 = top.removeFromTop (36);
-    for (auto* b : { &setupBtn, &specialBtn, &diskBtn, &segmentBtn, &songBtn, &sampleBtn }) b->setBounds (row2.removeFromLeft (bw).reduced (2));
+    for (juce::TextButton* b : std::initializer_list<juce::TextButton*> { &setupBtn, &specialBtn, &diskBtn, &segmentBtn, &songBtn, &sampleBtn }) b->setBounds (row2.removeFromLeft (bw).reduced (2));
     top.removeFromTop (6);
     auto row3 = top.removeFromTop (30);
     numberLabel.setBounds (row3.removeFromLeft (56));
@@ -262,6 +309,25 @@ void Crate12Editor::resized()
     themeBtn.setBounds (row3.removeFromRight (bw).reduced (2, 0));
 
     r.removeFromTop (22);
+    {
+        auto col = r.removeFromRight (196);
+        r.removeFromRight (26);
+        keypadFrame = col;
+        auto mods = col.removeFromTop (76);
+        auto m1 = mods.removeFromTop (38), m2 = mods;
+        syncBtn.setBounds (m1.removeFromLeft (m1.getWidth() / 2).reduced (2));
+        copyBtn.setBounds (m1.reduced (2));
+        segLenBtn.setBounds (m2.removeFromLeft (m2.getWidth() / 2).reduced (2));
+        stepBtn.setBounds (m2.reduced (2));
+        col.removeFromTop (10);
+        const int kh = juce::jmin (52, col.getHeight() / 5);
+        for (int row = 0; row < 5; ++row)
+        {
+            auto line = col.removeFromTop (kh);
+            const int kw = line.getWidth() / 3;
+            for (int c = 0; c < 3; ++c) keypad[row * 3 + c]->setBounds (line.removeFromLeft (kw).reduced (3));
+        }
+    }
     auto perf = r.removeFromTop (88);
     performFrame = perf;
     auto combos = perf.removeFromTop (46);
@@ -275,7 +341,7 @@ void Crate12Editor::resized()
     defineMix.setBounds (combos.removeFromLeft (130).reduced (3, 0).withTrimmedTop (14).withHeight (32));
     perf.removeFromTop (6);
     auto modes = perf.removeFromTop (34);
-    const int mw = modes.getWidth() / 7;
+    const int mw = modes.getWidth() / 8;
     for (auto* m : modeButtons) m->setBounds (modes.removeFromLeft (mw).reduced (2, 0));
 
     r.removeFromTop (22);
@@ -329,6 +395,11 @@ void Crate12Editor::syncControlsFromEngine()
         bankButtons[b]->setToggleState (b == e.getBank(), juce::dontSendNotification);
     const int modeIdx = e.inMultiMode() ? -1 : (int) e.getSliderMode();
     for (int m = 0; m < 3; ++m) modeButtons[m]->setToggleState (m == modeIdx, juce::dontSendNotification);
+    modeButtons[7]->setToggleState (modeIdx == (int) SliderMode::TuneDecay, juce::dontSendNotification);
+    {
+        float v8[8];
+        if (panel.sliderPositions (v8)) for (int i = 0; i < kPadsPerBank; ++i) sliders[i]->setValue (v8[i], juce::dontSendNotification);
+    }
     songSeg.setToggleState (e.isSongMode(), juce::dontSendNotification);
     { Lock l (e.mutex()); volume.setValue (e.project().globals.masterLevel, juce::dontSendNotification); }
     updating = false;
@@ -360,6 +431,16 @@ void Crate12Editor::timerCallback()
         else p->flash *= 0.8f;
         if (p->flash > 0.005f) p->repaint();
     }
+    if (lampTestUntil != 0)
+    {
+        const bool on = juce::Time::getMillisecondCounter() < lampTestUntil;
+        for (auto* b : { &runStop, &record, &songSeg, &eraseBtn }) b->setToggleState (on, juce::dontSendNotification);
+        for (auto* b : bankButtons) b->setToggleState (on, juce::dontSendNotification);
+        for (auto* b : modeButtons) b->setToggleState (on, juce::dontSendNotification);
+        for (auto* p : pads) { p->flash = on ? 0.8f : 0.0f; p->repaint(); }
+        if (! on) { lampTestUntil = 0; syncControlsFromEngine(); }
+        return;
+    }
     runStop.setToggleState (e.isPlaying(), juce::dontSendNotification);
     record.setToggleState (e.isRecording(), juce::dontSendNotification);
     tapRepeat.setToggleState (tapRepeat.isDown(), juce::dontSendNotification);
@@ -372,7 +453,36 @@ void Crate12Editor::timerCallback()
 // ===================================================================== pads
 void Crate12Editor::padDown (int pad, float vel)
 {
+    if (panel.pad (pad, eraseBtn.isDown())) { syncControlsFromEngine(); return; }   // keypad function wanted a pad
     engine().padPress (pad, juce::jlimit (1, 127, (int) std::lround (vel * 127.0f)));
+}
+
+bool Crate12Editor::keyPressed (const juce::KeyPress& k)
+{
+    const auto c = k.getTextCharacter();
+    if (c >= '0' && c <= '9') { panel.key (c - '0'); return true; }
+    if (k == juce::KeyPress::returnKey) { panel.key (FrontPanel::Enter); return true; }
+    if (k == juce::KeyPress::leftKey) { panel.key (FrontPanel::Left); return true; }
+    if (k == juce::KeyPress::rightKey) { panel.key (FrontPanel::Right); return true; }
+    if (c == 'y' || c == 'Y') { panel.key (FrontPanel::Yes); return true; }
+    if (c == 'n' || c == 'N' || k == juce::KeyPress::escapeKey) { panel.key (FrontPanel::No); return true; }
+    if (k == juce::KeyPress::spaceKey) { engine().runStop(); return true; }
+    return false;
+}
+
+void Crate12Editor::openWindow (juce::Component::SafePointer<juce::DialogWindow>& slot, juce::Component* content, const juce::String& title)
+{
+    if (slot != nullptr) { delete content; slot->toFront (true); return; }
+    content->setLookAndFeel (&lnf);
+    juce::DialogWindow::LaunchOptions o;
+    o.content.setOwned (content);
+    o.dialogTitle = title;
+    o.componentToCentreAround = this;
+    o.useNativeTitleBar = true;
+    o.resizable = true;
+    o.escapeKeyTriggersCloseButton = true;
+    slot = o.launchAsync();
+    if (slot != nullptr) slot->setLookAndFeel (&lnf);
 }
 
 void Crate12Editor::padUp (int pad) { engine().padRelease (pad); }
@@ -513,7 +623,7 @@ void Crate12Editor::showSetupMenu()
     m.addItem (15, "15 Define Mix...");
     m.addItem (16, "16 Select Mix...");
     m.addItem (17, "17 Channel Assign (right-click a pad)", false);
-    m.addItem (18, juce::String ("18 Tune/Decay select: ") + (g.tuneMode ? "Tune" : "Decay"));
+    m.addItem (18, "18 Tune/Decay select for the selected pad...");
     m.addItem (19, "19 Truncate/Loop (right-click a pad)", false);
     m.addItem (20, "20 Delete Sound (selected)");
     m.addItem (21, "21 First Song Step... (" + juce::String (firstStep + 1) + ")");
@@ -527,6 +637,9 @@ void Crate12Editor::showSetupMenu()
     m.addSubMenu ("Analog stage", analog);
     m.addItem (225, "Authentic limits (10 s / 2.5 s / 5000 notes)", true, g.authenticLimits);
     m.addItem (226, "Metronome only while recording", true, g.metronomeInRecordOnly);
+    m.addItem (227, "Trigger out MIDI note... (" + juce::String (g.triggerNote) + ")");
+    m.addItem (228, "SMPTE start time... (" + juce::String (Engine::framesToTimecode (g.smpteStartFrames, g.smpteRate)) + ")");
+    m.addItem (229, "Click/SMPTE input threshold...");
 
     m.showMenuAsync (juce::PopupMenu::Options(), [this, g] (int r) {
         auto& e = engine();
@@ -549,7 +662,12 @@ void Crate12Editor::showSetupMenu()
             case 14: e.setDynamicButtons (! g.dynamicButtons); break;
             case 15: askNumber ("Define Mix #", 1, 8, g.currentMix + 1, [this] (int v) { engine().defineMix (v - 1); }); break;
             case 16: askNumber ("Select Mix #", 1, 8, g.currentMix + 1, [this] (int v) { engine().selectMix (v - 1); }); break;
-            case 18: e.setTuneDecayMode (! g.tuneMode); break;
+            case 18: askNumber ("Selected pad slider: 1 = Tune, 2 = Decay", 1, 2, 1, [this] (int v) { engine().setDecaySelect (engine().getSelectedSound(), v == 2); syncControlsFromEngine(); }); break;
+            case 227: askNumber ("Trigger out MIDI note", 0, 127, g.triggerNote, [setG] (int v) { setG ([v] (Globals& x) { x.triggerNote = (uint8_t) v; }); }); break;
+            case 228: askNumber ("SMPTE start (HHMMSSFF)", 0, 23595929, 1000000, [this, g] (int v) {
+                          engine().setSmpteStart (Engine::timecodeToFrames (v / 1000000, (v / 10000) % 100, (v / 100) % 100, v % 100, g.smpteRate)); });
+                      break;
+            case 229: askNumber ("Sync input threshold (1-100 %)", 1, 100, (int) (g.syncInputThreshold * 100), [setG] (int v) { setG ([v] (Globals& x) { x.syncInputThreshold = (float) v / 100.0f; }); }); break;
             case 20: e.deleteSound (e.getSelectedSound()); break;
             case 21: askNumber ("First song step", 1, 999, 1, [this] (int v) { engine().setFirstSongStep (v - 1); }); break;
             case 222: e.setPitchKeys (! g.pitchKeys); break;
@@ -575,14 +693,18 @@ void Crate12Editor::showSpecialMenu()
     m.addSectionHeader ("SPECIAL");
     m.addItem (12, "12 Clear All Memory");
     m.addItem (13, "13 Check Remaining Memory");
-    m.addItem (14, "14 Write SMPTE (not applicable in software)", false);
+    m.addItem (14, juce::String ("14 Write SMPTE to main out") + (engine().isSmpteWriting() ? " (on)" : ""), true, engine().isSmpteWriting());
     m.addItem (15, "15 Clear All Sounds");
     m.addItem (16, "16 Clear All Sequences");
     m.addItem (17, "17 Copy Sound (selected)...");
     m.addItem (18, "18 Swap Sound (selected)...");
     m.addItem (19, "19 Default Decay (all sounds)...");
     m.addItem (20, "Reverse Sound (selected)");
-    m.addItem (21, "Name Sound: right-click a pad", false);
+    m.addItem (21, "21 Name Sound (selected)...");
+    m.addItem (22, "22 Dynamic Allocation: see SET-UP menu", false);
+    m.addItem (23, "23 Tx Sound Dump (selected sound, MIDI SDS)");
+    m.addItem (24, "24 Rx Sound Dump into selected sound");
+    m.addItem (99, "99 Lamp Test");
     m.addSeparator();
     m.addItem (30, "Load Factory Kit (banks A-C)");
     m.showMenuAsync (juce::PopupMenu::Options(), [this] (int r) {
@@ -608,6 +730,21 @@ void Crate12Editor::showSpecialMenu()
             case 18: askNumber ("Swap selected sound with # (1-32)", 1, 32, s + 1, [this, s] (int v) { engine().swapSounds (s, v - 1); }); break;
             case 19: askNumber ("Default decay for all sounds (0-100)", 0, 100, 100, [this] (int v) { engine().setDefaultDecayAll ((float) v / 100.0f); }); break;
             case 20: e.reverseSound (s); break;
+            case 14: e.setSmpteWrite (! e.isSmpteWriting()); break;
+            case 21:
+            {
+                auto* w = new juce::AlertWindow ("Name sound", "Up to 8 characters", juce::MessageBoxIconType::NoIcon);
+                w->addTextEditor ("name", "", "Name");
+                w->addButton ("OK", 1); w->addButton ("Cancel", 0);
+                w->enterModalState (true, juce::ModalCallbackFunction::create ([this, s, w] (int res) {
+                    if (res == 1) engine().nameSound (s, w->getTextEditorContents ("name").toUpperCase().toStdString());
+                    syncControlsFromEngine();
+                }), true);
+                break;
+            }
+            case 23: e.sdsSend (s); break;
+            case 24: e.sdsArmReceive (s); break;
+            case 99: startLampTest(); break;
             case 30: e.loadFactoryKit(); break;
             default: break;
         }
@@ -629,7 +766,21 @@ void Crate12Editor::showDiskMenu()
     m.addItem (8, "Save All (sequences + sounds + settings)...");
     m.addSeparator();
     m.addItem (9, "Import folder of audio files (fills pads from the current bank)...");
-    m.showMenuAsync (juce::PopupMenu::Options(), [this] (int r) {
+    m.addItem (10, "7 Catalog Sequences (browse a disk file)...");
+    m.addItem (11, "8 Catalog Sounds (browse a disk file)...");
+    m.showMenuAsync (juce::PopupMenu::Options(), [this] (int r) { diskAction (r); });
+}
+
+void Crate12Editor::diskFunction (int n)
+{
+    static const int map[] = { 1, 2, 3, 4, 5, 6, 7, 10, 11 };
+    if (n >= 0 && n <= 8) diskAction (map[n]);
+    else engine().setLcd ("Disk 9 Format", "Not needed here");
+}
+
+void Crate12Editor::diskAction (int r)
+{
+    {
         auto saveTo = [this] (int sections) {
             chooseFile (true, "*.c12", [this, sections] (juce::File f) {
                 const auto blob = engine().saveDisk (sections);
@@ -678,9 +829,51 @@ void Crate12Editor::showDiskMenu()
                 });
                 break;
             }
+            case 10: case 11:
+            {
+                const bool sounds = r == 11;
+                loadFrom ([this, sounds] (const juce::MemoryBlock& mb) {
+                    auto tmp = std::make_shared<Project>();
+                    int found = 0;
+                    if (! deserializeProject (*tmp, (const uint8_t*) mb.getData(), mb.getSize(), &found)) { engine().setLcd ("Disk Error", "Unreadable file"); return; }
+                    juce::PopupMenu cat;
+                    if (! sounds)
+                    {
+                        cat.addSectionHeader ("Load into segment " + juce::String (engine().getSegment()).paddedLeft ('0', 2));
+                        for (int i = 0; i < kNumSegments; ++i)
+                        {
+                            const auto& sg = tmp->segments[(size_t) i];
+                            if (sg.events.empty()) continue;
+                            cat.addItem (100 + i, "Seg " + juce::String (i).paddedLeft ('0', 2) + "   " + juce::String (sg.bars) + " bars + " + juce::String (sg.extraBeats)
+                                                  + " beats, " + juce::String (sg.beatsPerBar) + "/" + juce::String (sg.beatUnit) + ", " + juce::String ((int) sg.events.size()) + " notes");
+                        }
+                    }
+                    else
+                    {
+                        const int dst = engine().getSelectedSound();
+                        cat.addSectionHeader (juce::String ("Load into sound ") + bankLetter (dst / 8) + juce::String (dst % 8 + 1));
+                        for (int i = 0; i < kNumSounds; ++i)
+                        {
+                            const auto& sd = tmp->sounds[(size_t) i];
+                            if (sd.empty()) continue;
+                            cat.addItem (100 + i, juce::String::charToString (bankLetter (i / 8)) + juce::String (i % 8 + 1) + "   " + juce::String (sd.name).paddedRight (' ', 9)
+                                                  + juce::String ((double) sd.data.size() / kNativeRate, 2) + " s");
+                        }
+                    }
+                    if (cat.getNumItems() <= 1) cat.addItem (99, "(nothing on this disk)", false);
+                    lastDisk.assign ((const uint8_t*) mb.getData(), (const uint8_t*) mb.getData() + mb.getSize());
+                    cat.showMenuAsync (juce::PopupMenu::Options(), [this, sounds] (int pick) {
+                        if (pick < 100) return;
+                        if (sounds) engine().loadSoundFromDisk (lastDisk.data(), lastDisk.size(), pick - 100, engine().getSelectedSound());
+                        else engine().loadSegmentFromDisk (lastDisk.data(), lastDisk.size(), pick - 100, engine().getSegment());
+                        syncControlsFromEngine();
+                    });
+                });
+                break;
+            }
             default: break;
         }
-    });
+    }
 }
 
 void Crate12Editor::showSegmentMenu()
@@ -779,6 +972,7 @@ void Crate12Editor::showSongMenu()
     m.addItem (11, "Append END: link to song...");
     m.addItem (12, "Delete last step");
     m.addItem (13, "Clear song");
+    m.addItem (14, "Song tempo... (" + (s.tempo > 0 ? juce::String (s.tempo, 1) : juce::String ("none")) + ")");
     m.showMenuAsync (juce::PopupMenu::Options(), [this, song, n = (int) s.steps.size()] (int r) {
         auto& en = engine();
         auto add = [this, song, n] (SongStep st) { engine().songInsertStep (song, n, st); };
@@ -804,6 +998,7 @@ void Crate12Editor::showSongMenu()
             case 11: askNumber ("Link to song #", 0, 99, 0, [add] (int v) { add ({ T::End, 2, v, 0 }); }); break;
             case 12: if (n > 0) en.songDeleteStep (song, n - 1); break;
             case 13: en.songClear (song); break;
+            case 14: askNumber ("Song tempo (0 = none)", 0, (int) kMaxTempo, 0, [this, song] (int v) { engine().setSongTempo (song, (double) v); }); break;
             default: break;
         }
     });

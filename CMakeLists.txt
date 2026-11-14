@@ -17,7 +17,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_library(crate12_engine STATIC
     Source/engine/Engine.cpp
     Source/engine/Serialize.cpp
-    Source/engine/FactoryKit.cpp)
+    Source/engine/FactoryKit.cpp
+    Source/engine/ExtSync.cpp)
 target_include_directories(crate12_engine PUBLIC Source/engine)
 set_target_properties(crate12_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -65,7 +66,9 @@ target_sources(Crate12 PRIVATE
     Source/plugin/PluginProcessor.cpp
     Source/plugin/PluginEditor.cpp
     Source/plugin/Theme.cpp
-    Source/plugin/HardwareLookAndFeel.cpp)
+    Source/plugin/HardwareLookAndFeel.cpp
+    Source/plugin/FrontPanel.cpp
+    Source/plugin/EditorDialogs.cpp)
 
 target_compile_definitions(Crate12 PUBLIC
     JUCE_WEB_BROWSER=0

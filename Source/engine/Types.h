@@ -45,7 +45,8 @@ enum class Metronome : uint8_t { Off, Q4, Q4T, Q8, Q8T, Q16, Q16T, Q32, Q32T, Cl
 // Swing amounts from the original: 50, 54, 58, 63, 67, 71 %
 constexpr std::array<int, 6> kSwingValues { 50, 54, 58, 63, 67, 71 };
 
-enum class SliderMode : uint8_t { Mix, Tune, Decay, MultiPitch, MultiLevel, MultiDecay };
+// TuneDecay is the hardware SET-UP 18 behaviour: each pad's slider is tune OR decay, chosen per sound.
+enum class SliderMode : uint8_t { Mix, Tune, Decay, MultiPitch, MultiLevel, MultiDecay, TuneDecay };
 
 // ---------------------------------------------------------------- sounds
 struct Sound
@@ -76,6 +77,7 @@ struct Mix
 {
     std::array<PadParams, kNumSounds> pads {};
     std::array<uint8_t, kNumSounds> channel {};   // output channel 0..7 per sound
+    std::array<uint8_t, kNumSounds> decaySelect {}; // SET-UP 18 per sound: 0 = slider tunes, 1 = slider sets decay
     Mix() { for (int i = 0; i < kNumSounds; ++i) channel[(size_t) i] = (uint8_t) (i % kNumChannels); }
 };
 
@@ -124,6 +126,7 @@ struct SongStep
 struct Song
 {
     std::vector<SongStep> steps;
+    double tempo = 0.0;   // songs keep their own tempo (0 = use the current tempo)
     bool isEmpty() const { return steps.empty(); }
 };
 
@@ -155,6 +158,11 @@ struct Globals
     SyncMode  syncMode  = SyncMode::Host;
     SmpteRate smpteRate = SmpteRate::Fps30;
     int64_t   smpteStartFrames = 0;      // HH:MM:SS:FF start offset, in frames
+    float     syncInputThreshold = 0.25f;// click / SMPTE input detection level
+
+    // Trigger out (song TRIGGER steps): sent as a MIDI note plus a click
+    bool    triggerOutMidi = true;
+    uint8_t triggerNote = 75;
 
     // SPECIAL 22: dynamic allocation per channel pair (1/2, 3/4, 5/6, 7/8)
     std::array<bool, 4> dynamicAllocation { false, false, false, false };
