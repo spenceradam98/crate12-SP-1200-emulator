@@ -4,8 +4,6 @@ using namespace c12;
 
 namespace
 {
-const juce::Colour kPanel (0xff2b2d31), kPanelHi (0xff3a3d43), kAccent (0xffe8792b), kText (0xffe6e2d6),
-    kPadCol (0xff55585f), kLcdBg (0xff1d2b12), kLcdFg (0xffb6ff5a);
 
 template <typename T> T clampv (T v, T lo, T hi) { return std::min (hi, std::max (lo, v)); }
 using Lock = std::lock_guard<std::recursive_mutex>;
@@ -14,15 +12,7 @@ using Lock = std::lock_guard<std::recursive_mutex>;
 // ===================================================================== pads / lcd
 void PadButton::paint (juce::Graphics& g)
 {
-    auto r = getLocalBounds().toFloat().reduced (3);
-    g.setColour (down ? kAccent.darker (0.2f) : kPadCol);
-    g.fillRoundedRectangle (r, 6);
-    if (flash > 0.01f) { g.setColour (kAccent.withAlpha (flash)); g.fillRoundedRectangle (r, 6); }
-    g.setColour (dragOver ? kAccent : kPanelHi.brighter (0.3f));
-    g.drawRoundedRectangle (r, 6, dragOver ? 3.0f : 1.5f);
-    g.setColour (kText.withAlpha (hasSound ? 1.0f : 0.45f));
-    g.setFont (juce::FontOptions (13.0f));
-    g.drawFittedText (label, getLocalBounds().reduced (6), juce::Justification::centred, 2);
+    editor.hardware().drawPad (g, getLocalBounds().toFloat(), down, flash, dragOver, label, hasSound);
 }
 
 void PadButton::mouseDown (const juce::MouseEvent& e)
@@ -51,21 +41,15 @@ void PadButton::filesDropped (const juce::StringArray& files, int, int)
 
 void LcdDisplay::paint (juce::Graphics& g)
 {
-    auto r = getLocalBounds().toFloat();
-    g.setColour (juce::Colours::black);
-    g.fillRoundedRectangle (r, 4);
-    g.setColour (kLcdBg);
-    g.fillRoundedRectangle (r.reduced (4), 3);
-    g.setColour (kLcdFg);
-    g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 22.0f, juce::Font::plain));
-    auto inner = getLocalBounds().reduced (12, 8);
-    g.drawText (line1.paddedRight (' ', 16), inner.removeFromTop (inner.getHeight() / 2), juce::Justification::centredLeft);
-    g.drawText (line2.paddedRight (' ', 16), inner, juce::Justification::centredLeft);
+    if (auto* hw = dynamic_cast<HardwareLookAndFeel*> (&getLookAndFeel()))
+        hw->drawLcd (g, getLocalBounds().toFloat(), line1, line2);
 }
 
 // ===================================================================== editor
 Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), proc (p)
 {
+    lnf.setTheme (themes.current());
+    setLookAndFeel (&lnf);
     addAndMakeVisible (lcd);
 
     for (int i = 0; i < kPadsPerBank; ++i)
@@ -75,7 +59,6 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
 
         auto* s = sliders.add (new juce::Slider (juce::Slider::LinearVertical, juce::Slider::NoTextBox));
         s->setRange (0.0, 1.0);
-        s->setColour (juce::Slider::thumbColourId, kAccent);
         s->onValueChange = [this, i, s] { if (! updating) engine().setSlider (i, (float) s->getValue()); };
         addAndMakeVisible (s);
         auto* l = sliderLabels.add (new juce::Label ({}, juce::String (i + 1)));
@@ -87,6 +70,7 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
     {
         auto* bb = bankButtons.add (new juce::TextButton (juce::String ("BANK ") + bankLetter (b)));
         bb->setClickingTogglesState (false);
+        bb->getProperties().set ("led", true);
         bb->onClick = [this, b] { engine().setBank (b); syncControlsFromEngine(); };
         addAndMakeVisible (bb);
     }
@@ -95,6 +79,7 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
     for (int m = 0; m < 7; ++m)
     {
         auto* mb = modeButtons.add (new juce::TextButton (modeNames[m]));
+        if (m < 6) mb->getProperties().set ("led", true);
         mb->onClick = [this, m] {
             auto& e = engine();
             switch (m)
@@ -113,8 +98,10 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
     }
 
     for (auto* b : { &runStop, &record, &songSeg, &tapTempo, &tapRepeat, &eraseBtn, &setupBtn, &specialBtn,
-                     &diskBtn, &segmentBtn, &songBtn, &sampleBtn, &defineMix })
+                     &diskBtn, &segmentBtn, &songBtn, &sampleBtn, &defineMix, &themeBtn })
         addAndMakeVisible (b);
+    for (auto* b : { &runStop, &record, &songSeg, &eraseBtn }) b->getProperties().set ("led", true);
+    themeBtn.onClick = [this] { showThemeMenu(); };
 
     runStop.onClick = [this] { engine().runStop(); };
     record.onClick = [this] { engine().setRecord (! engine().isRecording()); };
@@ -130,9 +117,15 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
     sampleBtn.onClick = [this] { showSampleMenu(); };
     defineMix.onClick = [this] { engine().defineMix (mixSel.getSelectedItemIndex()); };
 
-    tempo.setSliderStyle (juce::Slider::LinearHorizontal);
-    tempo.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 22);
+    tempo.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    tempo.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     tempo.setRange (kMinTempo, kMaxTempo, 0.1);
+    tempo.setMouseDragSensitivity (600);
+    volume.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    volume.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    volume.setRange (0.0, 1.0);
+    volume.onValueChange = [this] { if (! updating) { Lock l (engine().mutex()); engine().project().globals.masterLevel = (float) volume.getValue(); } };
+    addAndMakeVisible (volume);
     tempo.onValueChange = [this] { if (! updating) engine().setTempo (tempo.getValue()); };
     number.setSliderStyle (juce::Slider::IncDecButtons);
     number.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 40, 22);
@@ -158,85 +151,150 @@ Crate12Editor::Crate12Editor (Crate12Processor& p) : AudioProcessorEditor (&p), 
     for (int i = 0; i < kNumMixes; ++i) mixSel.addItem ("Mix " + juce::String (i + 1), i + 1);
     mixSel.onChange = [this] { if (! updating) engine().selectMix (mixSel.getSelectedItemIndex()); };
     for (auto* c : { &swing, &autoCorrect, &metronome, &syncMode, &mixSel }) addAndMakeVisible (c);
-    for (auto* l : { &tempoLabel, &numberLabel, &swingL, &acL, &metL, &syncL, &mixL })
+    for (auto* l : { &tempoLabel, &volumeLabel, &numberLabel, &swingL, &acL, &metL, &syncL, &mixL })
     {
-        l->setFont (juce::FontOptions (11.0f));
-        l->setColour (juce::Label::textColourId, kText.withAlpha (0.7f));
+        l->setFont (juce::FontOptions (11.0f, juce::Font::bold));
         addAndMakeVisible (l);
     }
+    tempoLabel.setJustificationType (juce::Justification::centred);
+    volumeLabel.setJustificationType (juce::Justification::centred);
+    for (auto* l : sliderLabels) l->setFont (juce::FontOptions (12.0f, juce::Font::bold));
 
     setResizable (true, true);
-    setResizeLimits (900, 560, 2000, 1200);
-    setSize (1040, 620);
+    setResizeLimits (1100, 640, 2200, 1300);
+    setSize (1180, 680);
     syncControlsFromEngine();
     startTimerHz (30);
 }
 
-Crate12Editor::~Crate12Editor() { stopTimer(); }
+Crate12Editor::~Crate12Editor()
+{
+    stopTimer();
+    if (themeWindow != nullptr) delete themeWindow.getComponent();
+    setLookAndFeel (nullptr);
+}
+
+void Crate12Editor::applyTheme (const Theme& t, bool remember)
+{
+    themes.setCurrent (t, remember);
+    lnf.setTheme (t);
+    sendLookAndFeelChange();
+    repaint();
+}
 
 void Crate12Editor::paint (juce::Graphics& g)
 {
-    g.fillAll (kPanel);
-    g.setColour (kAccent);
-    g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
-    g.drawText ("CRATE12", 20, getHeight() - 36, 200, 28, juce::Justification::centredLeft);
-    g.setColour (kText.withAlpha (0.5f));
-    g.setFont (juce::FontOptions (11.0f));
-    g.drawText ("12-BIT SAMPLING PERCUSSION  26.04 kHz", 130, getHeight() - 36, 400, 28, juce::Justification::centredLeft);
+    const auto& th = lnf.theme();
+    lnf.drawPanel (g, getLocalBounds());
+
+    // silkscreened section frames
+    auto frame = [&] (juce::Rectangle<int> r, const juce::String& title) {
+        if (r.isEmpty()) return;
+        auto f = r.toFloat().expanded (8, 6);
+        g.setColour (th.screen.withAlpha (0.75f));
+        g.drawRoundedRectangle (f, 6.0f, 1.2f);
+        if (title.isNotEmpty())
+        {
+            g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+            const int tw = juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), title) + 12;
+            auto tr = juce::Rectangle<float> (f.getX() + 14, f.getY() - 7, (float) tw, 14);
+            g.setColour (th.panel);
+            g.fillRect (tr);
+            g.setColour (th.panelText.withAlpha (0.85f));
+            g.drawText (title, tr, juce::Justification::centred);
+        }
+    };
+    frame (transportFrame, "PROGRAMMING");
+    frame (performFrame, "PERFORMANCE");
+    frame (sliderFrame, "LEVEL / TUNE / DECAY");
+    frame (padFrame, "");
+
+    // screws
+    const float m = 10.0f;
+    lnf.drawScrew (g, { m, m }, 5.0f, 0.6f);
+    lnf.drawScrew (g, { (float) getWidth() - m, m }, 5.0f, 2.1f);
+    lnf.drawScrew (g, { m, (float) getHeight() - m }, 5.0f, 1.2f);
+    lnf.drawScrew (g, { (float) getWidth() - m, (float) getHeight() - m }, 5.0f, 0.2f);
+
+    // badge
+    auto badge = juce::Rectangle<float> (24.0f, (float) getHeight() - 40.0f, 118.0f, 26.0f);
+    g.setColour (juce::Colours::black.withAlpha (0.35f));
+    g.fillRoundedRectangle (badge.translated (0, 1.5f), 3.0f);
+    g.setGradientFill (juce::ColourGradient (th.accent.brighter (0.3f), 0, badge.getY(), th.accent.darker (0.3f), 0, badge.getBottom(), false));
+    g.fillRoundedRectangle (badge, 3.0f);
+    g.setColour (th.accent.contrasting (1.0f));
+    g.setFont (juce::FontOptions (17.0f, juce::Font::bold));
+    g.drawText ("CRATE12", badge, juce::Justification::centred);
+    g.setColour (th.panelText.withAlpha (0.65f));
+    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    g.drawText ("12-BIT SAMPLING PERCUSSION   26.04 kHz", 156, getHeight() - 40, 400, 26, juce::Justification::centredLeft);
 }
 
 void Crate12Editor::resized()
 {
-    auto r = getLocalBounds().reduced (16);
-    r.removeFromBottom (32);
+    auto r = getLocalBounds().reduced (26, 24);
+    r.removeFromBottom (34);
 
-    // top: LCD + transport
-    auto top = r.removeFromTop (110);
-    lcd.setBounds (top.removeFromLeft (330));
-    top.removeFromLeft (16);
-    auto row1 = top.removeFromTop (34);
-    for (auto* b : { &runStop, &record, &songSeg, &tapTempo, &tapRepeat, &eraseBtn })
-    { b->setBounds (row1.removeFromLeft (100).reduced (2)); }
-    top.removeFromTop (8);
-    auto row2 = top.removeFromTop (34);
-    for (auto* b : { &setupBtn, &specialBtn, &diskBtn, &segmentBtn, &songBtn, &sampleBtn })
-    { b->setBounds (row2.removeFromLeft (100).reduced (2)); }
+    // top: LCD, programming buttons, knobs
+    auto top = r.removeFromTop (118);
+    auto knobs = top.removeFromRight (190);
+    {
+        auto k1 = knobs.removeFromLeft (95), k2 = knobs;
+        tempoLabel.setBounds (k1.removeFromTop (16));
+        tempo.setBounds (k1);
+        volumeLabel.setBounds (k2.removeFromTop (16));
+        volume.setBounds (k2.withTrimmedBottom (20));
+    }
+    lcd.setBounds (top.removeFromLeft (340).withTrimmedBottom (4));
+    top.removeFromLeft (24);
+    transportFrame = top;
+    auto row1 = top.removeFromTop (36);
+    const int bw = juce::jmax (90, top.getWidth() / 6);
+    for (auto* b : { &runStop, &record, &songSeg, &tapTempo, &tapRepeat, &eraseBtn }) b->setBounds (row1.removeFromLeft (bw).reduced (2));
+    top.removeFromTop (4);
+    auto row2 = top.removeFromTop (36);
+    for (auto* b : { &setupBtn, &specialBtn, &diskBtn, &segmentBtn, &songBtn, &sampleBtn }) b->setBounds (row2.removeFromLeft (bw).reduced (2));
     top.removeFromTop (6);
-    auto row3 = top;
-    tempoLabel.setBounds (row3.removeFromLeft (50));
-    tempo.setBounds (row3.removeFromLeft (230));
-    numberLabel.setBounds (row3.removeFromLeft (50));
-    number.setBounds (row3.removeFromLeft (120));
+    auto row3 = top.removeFromTop (30);
+    numberLabel.setBounds (row3.removeFromLeft (56));
+    number.setBounds (row3.removeFromLeft (130).reduced (0, 2));
+    row3.removeFromLeft (12);
+    themeBtn.setBounds (row3.removeFromRight (bw).reduced (2, 0));
 
-    r.removeFromTop (10);
-    auto combos = r.removeFromTop (46);
+    r.removeFromTop (22);
+    auto perf = r.removeFromTop (88);
+    performFrame = perf;
+    auto combos = perf.removeFromTop (46);
     auto place = [&combos] (juce::Label& l, juce::Component& c, int w) {
         auto a = combos.removeFromLeft (w).reduced (3, 0);
         l.setBounds (a.removeFromTop (16));
         c.setBounds (a.removeFromTop (26));
     };
-    place (swingL, swing, 100); place (acL, autoCorrect, 120); place (metL, metronome, 130);
-    place (syncL, syncMode, 130); place (mixL, mixSel, 100);
-    defineMix.setBounds (combos.removeFromLeft (110).reduced (3, 0).withTrimmedTop (16).withHeight (26));
+    place (swingL, swing, 100); place (acL, autoCorrect, 120); place (metL, metronome, 140);
+    place (syncL, syncMode, 140); place (mixL, mixSel, 110);
+    defineMix.setBounds (combos.removeFromLeft (130).reduced (3, 0).withTrimmedTop (14).withHeight (32));
+    perf.removeFromTop (6);
+    auto modes = perf.removeFromTop (34);
+    const int mw = modes.getWidth() / 7;
+    for (auto* m : modeButtons) m->setBounds (modes.removeFromLeft (mw).reduced (2, 0));
 
-    r.removeFromTop (8);
-    auto modes = r.removeFromTop (30);
-    for (auto* m : modeButtons) m->setBounds (modes.removeFromLeft (118).reduced (2, 0));
+    r.removeFromTop (22);
+    auto banks = r.removeFromBottom (32);
+    for (auto* b : bankButtons) b->setBounds (banks.removeFromLeft (120).reduced (2, 0));
+    r.removeFromBottom (14);
 
-    r.removeFromTop (8);
-    auto banks = r.removeFromBottom (30);
-    for (auto* b : bankButtons) b->setBounds (banks.removeFromLeft (100).reduced (2, 0));
-    r.removeFromBottom (8);
-
-    auto padRow = r.removeFromBottom (90);
+    auto padRow = r.removeFromBottom (96);
+    padFrame = padRow;
+    r.removeFromBottom (16);
+    sliderFrame = r;
     auto sliderArea = r;
     const int w = padRow.getWidth() / kPadsPerBank;
     for (int i = 0; i < kPadsPerBank; ++i)
     {
-        pads[i]->setBounds (padRow.removeFromLeft (w).reduced (4));
+        pads[i]->setBounds (padRow.removeFromLeft (w).reduced (6, 2));
         auto s = sliderArea.removeFromLeft (w);
         sliderLabels[i]->setBounds (s.removeFromBottom (18));
-        sliders[i]->setBounds (s.reduced (w / 3, 4));
+        sliders[i]->setBounds (s.withSizeKeepingCentre (juce::jmin (w, 90), s.getHeight()).reduced (0, 6));
     }
 }
 
@@ -268,10 +326,11 @@ void Crate12Editor::syncControlsFromEngine()
     number.setValue (e.isSongMode() ? e.getSong() : e.getSegment(), juce::dontSendNotification);
     songSeg.setButtonText (e.isSongMode() ? "SONG" : "SEGMENT");
     for (int b = 0; b < kNumBanks; ++b)
-        bankButtons[b]->setColour (juce::TextButton::buttonColourId, b == e.getBank() ? kAccent.darker (0.3f) : kPanelHi);
+        bankButtons[b]->setToggleState (b == e.getBank(), juce::dontSendNotification);
     const int modeIdx = e.inMultiMode() ? -1 : (int) e.getSliderMode();
-    for (int m = 0; m < 3; ++m)
-        modeButtons[m]->setColour (juce::TextButton::buttonColourId, m == modeIdx ? kAccent.darker (0.3f) : kPanelHi);
+    for (int m = 0; m < 3; ++m) modeButtons[m]->setToggleState (m == modeIdx, juce::dontSendNotification);
+    songSeg.setToggleState (e.isSongMode(), juce::dontSendNotification);
+    { Lock l (e.mutex()); volume.setValue (e.project().globals.masterLevel, juce::dontSendNotification); }
     updating = false;
 }
 
@@ -301,8 +360,10 @@ void Crate12Editor::timerCallback()
         else p->flash *= 0.8f;
         if (p->flash > 0.005f) p->repaint();
     }
-    runStop.setColour (juce::TextButton::buttonColourId, e.isPlaying() ? juce::Colour (0xff2f8a3a) : kPanelHi);
-    record.setColour (juce::TextButton::buttonColourId, e.isRecording() ? juce::Colour (0xffb02a2a) : kPanelHi);
+    runStop.setToggleState (e.isPlaying(), juce::dontSendNotification);
+    record.setToggleState (e.isRecording(), juce::dontSendNotification);
+    tapRepeat.setToggleState (tapRepeat.isDown(), juce::dontSendNotification);
+    eraseBtn.setToggleState (eraseBtn.isDown(), juce::dontSendNotification);
 
     static int slow = 0;
     if (++slow % 15 == 0 && ! isMouseButtonDownAnywhere()) syncControlsFromEngine();
@@ -777,4 +838,199 @@ void Crate12Editor::showSampleMenu()
             default: break;
         }
     });
+}
+
+// ===================================================================== themes
+namespace
+{
+class SwatchPicker : public juce::ColourSelector, private juce::ChangeListener
+{
+public:
+    SwatchPicker (juce::Colour start, std::function<void (juce::Colour)> cb)
+        : juce::ColourSelector (juce::ColourSelector::showColourAtTop | juce::ColourSelector::showSliders | juce::ColourSelector::showColourspace),
+          onPick (std::move (cb))
+    {
+        setCurrentColour (start, juce::dontSendNotification);
+        setSize (300, 380);
+        addChangeListener (this);
+    }
+    ~SwatchPicker() override { removeChangeListener (this); }
+private:
+    void changeListenerCallback (juce::ChangeBroadcaster*) override { if (onPick) onPick (getCurrentColour()); }
+    std::function<void (juce::Colour)> onPick;
+};
+} // namespace
+
+ThemeEditor::ThemeEditor (ThemeManager& tm, Theme start, std::function<void (const Theme&, bool)> cb)
+    : themes (tm), working (std::move (start)), apply (std::move (cb))
+{
+    const auto& slots = Theme::slots();
+    for (size_t i = 0; i < slots.size(); ++i)
+    {
+        auto* l = labels.add (new juce::Label ({}, slots[i].label));
+        addAndMakeVisible (l);
+        auto* b = swatches.add (new juce::TextButton());
+        b->getProperties().set ("swatch", true);
+        b->onClick = [this, i, b] {
+            const auto member = Theme::slots()[i].member;
+            auto picker = std::make_unique<SwatchPicker> (working.*member, [this, member] (juce::Colour c) {
+                working.*member = c;
+                refresh();
+                apply (working, false);
+            });
+            juce::CallOutBox::launchAsynchronously (std::move (picker), b->getScreenBounds(), nullptr);
+        };
+        addAndMakeVisible (b);
+    }
+
+    int id = 1;
+    for (auto& t : themes.builtIns()) base.addItem (t.name, id++);
+    for (auto& t : themes.userThemes()) base.addItem (t.name + " (custom)", id++);
+    base.setText ("Choose a theme to start from...", juce::dontSendNotification);
+    base.onChange = [this] {
+        const int idx = base.getSelectedItemIndex();
+        const auto& b = themes.builtIns();
+        const auto user = themes.userThemes();
+        if (idx < 0) return;
+        const Theme picked = idx < (int) b.size() ? b[(size_t) idx] : user[(size_t) idx - b.size()];
+        const auto keepName = name.getText();
+        working = picked;
+        working.name = keepName;
+        refresh();
+        apply (working, false);
+    };
+    addAndMakeVisible (base);
+    addAndMakeVisible (baseLabel);
+    addAndMakeVisible (nameLabel);
+    name.setText (working.builtIn ? working.name + " custom" : working.name);
+    addAndMakeVisible (name);
+
+    save.onClick = [this] {
+        working.name = name.getText().trim().isEmpty() ? juce::String ("My Theme") : name.getText().trim();
+        for (auto& b : themes.builtIns()) if (b.name == working.name) working.name << " custom";
+        name.setText (working.name, false);
+        working.builtIn = false;
+        if (themes.saveUserTheme (working)) apply (working, true);
+    };
+    exportBtn.onClick = [this] {
+        working.name = name.getText().trim().isEmpty() ? juce::String ("My Theme") : name.getText().trim();
+        chooser = std::make_unique<juce::FileChooser> ("Export theme", juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
+                                                           .getChildFile (juce::File::createLegalFileName (working.name) + ".c12theme"), "*.c12theme");
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this] (const juce::FileChooser& fc) { if (fc.getResult() != juce::File()) themes.exportTheme (working, fc.getResult().withFileExtension ("c12theme")); });
+    };
+    importBtn.onClick = [this] {
+        chooser = std::make_unique<juce::FileChooser> ("Import theme", juce::File(), "*.c12theme");
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this] (const juce::FileChooser& fc) {
+            const auto f = fc.getResult();
+            if (f == juce::File() || ! themes.importTheme (f)) return;
+            const auto v = juce::JSON::parse (f.loadFileAsString());
+            working = Theme::fromVar (v, working);
+            name.setText (working.name, false);
+            refresh();
+            apply (working, false);
+        });
+    };
+    for (auto* b : { &save, &exportBtn, &importBtn }) addAndMakeVisible (b);
+    refresh();
+    setSize (460, 40 + 30 * (int) slots.size() + 130);
+}
+
+void ThemeEditor::refresh()
+{
+    const auto& slots = Theme::slots();
+    for (size_t i = 0; i < slots.size(); ++i)
+    {
+        const auto col = working.*(slots[i].member);
+        auto* b = swatches[(int) i];
+        b->setButtonText ("#" + col.toDisplayString (false));
+        b->setColour (juce::TextButton::buttonColourId, col);
+        b->setColour (juce::TextButton::textColourOffId, col.contrasting (1.0f));
+        b->repaint();
+    }
+}
+
+void ThemeEditor::paint (juce::Graphics& g)
+{
+    g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId).darker (0.25f));
+}
+
+void ThemeEditor::resized()
+{
+    auto r = getLocalBounds().reduced (16);
+    auto top = r.removeFromTop (28);
+    baseLabel.setBounds (top.removeFromLeft (110));
+    base.setBounds (top);
+    r.removeFromTop (8);
+    for (int i = 0; i < swatches.size(); ++i)
+    {
+        auto row = r.removeFromTop (30);
+        labels[i]->setBounds (row.removeFromLeft (200));
+        swatches[i]->setBounds (row.reduced (0, 3));
+    }
+    r.removeFromTop (10);
+    auto nm = r.removeFromTop (28);
+    nameLabel.setBounds (nm.removeFromLeft (110));
+    name.setBounds (nm);
+    r.removeFromTop (12);
+    auto btns = r.removeFromTop (34);
+    const int w = btns.getWidth() / 3;
+    save.setBounds (btns.removeFromLeft (w).reduced (3, 0));
+    exportBtn.setBounds (btns.removeFromLeft (w).reduced (3, 0));
+    importBtn.setBounds (btns.reduced (3, 0));
+}
+
+void Crate12Editor::showThemeMenu()
+{
+    juce::PopupMenu m, user;
+    const auto current = themes.current().name;
+    int id = 1;
+    m.addSectionHeader ("Built-in themes");
+    for (auto& t : themes.builtIns()) m.addItem (id++, t.name, true, t.name == current);
+    const auto users = themes.userThemes();
+    const int userBase = id;
+    for (auto& t : users) user.addItem (id++, t.name, true, t.name == current);
+    if (users.empty()) user.addItem (999, "(none yet)", false);
+    m.addSubMenu ("My themes", user);
+    m.addSeparator();
+    m.addItem (1000, "Create / edit colour scheme...");
+    m.addItem (1001, "Import theme file...");
+    m.addItem (1002, "Delete current custom theme", ! users.empty() && ! themes.current().builtIn);
+    m.addItem (1003, "Show themes folder");
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&themeBtn), [this, users, userBase] (int r) {
+        const auto& b = themes.builtIns();
+        if (r >= 1 && r <= (int) b.size()) { applyTheme (b[(size_t) r - 1], true); return; }
+        if (r >= userBase && r < userBase + (int) users.size()) { applyTheme (users[(size_t) (r - userBase)], true); return; }
+        switch (r)
+        {
+            case 1000: openThemeEditor(); break;
+            case 1001:
+                chooseFile (false, "*.c12theme", [this] (juce::File f) {
+                    if (themes.importTheme (f))
+                    {
+                        auto t = Theme::fromVar (juce::JSON::parse (f.loadFileAsString()), themes.current());
+                        themes.selectByName (t.name);
+                        applyTheme (themes.current(), true);
+                    }
+                });
+                break;
+            case 1002: themes.deleteUserTheme (themes.current().name); applyTheme (themes.builtIns().front(), true); break;
+            case 1003: themes.userThemeDir().revealToUser(); break;
+            default: break;
+        }
+    });
+}
+
+void Crate12Editor::openThemeEditor()
+{
+    if (themeWindow != nullptr) { themeWindow->toFront (true); return; }
+    juce::DialogWindow::LaunchOptions o;
+    o.content.setOwned (new ThemeEditor (themes, themes.current(), [this] (const Theme& t, bool remember) { applyTheme (t, remember); }));
+    o.dialogTitle = "Crate12 colour scheme";
+    o.componentToCentreAround = this;
+    o.useNativeTitleBar = true;
+    o.resizable = false;
+    o.escapeKeyTriggersCloseButton = true;
+    themeWindow = o.launchAsync();
+    if (themeWindow != nullptr) themeWindow->setLookAndFeel (&lnf);
 }

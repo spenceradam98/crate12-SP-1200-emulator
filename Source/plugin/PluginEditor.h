@@ -1,5 +1,6 @@
 #pragma once
 
+#include "HardwareLookAndFeel.h"
 #include "PluginProcessor.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -35,6 +36,27 @@ public:
     juce::String line1, line2;
 };
 
+// Colour-scheme editor: one swatch per theme slot, live preview, save / import / export.
+class ThemeEditor : public juce::Component
+{
+public:
+    ThemeEditor (ThemeManager& tm, Theme start, std::function<void (const Theme&, bool remember)> apply);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+private:
+    void refresh();
+    ThemeManager& themes;
+    Theme working;
+    std::function<void (const Theme&, bool)> apply;
+    juce::OwnedArray<juce::Label> labels;
+    juce::OwnedArray<juce::TextButton> swatches;
+    juce::ComboBox base;
+    juce::Label baseLabel { {}, "Start from" }, nameLabel { {}, "Theme name" };
+    juce::TextEditor name;
+    juce::TextButton save { "SAVE THEME" }, exportBtn { "EXPORT FILE..." }, importBtn { "IMPORT FILE..." };
+    std::unique_ptr<juce::FileChooser> chooser;
+};
+
 class Crate12Editor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -48,8 +70,12 @@ public:
     void padMenu (int pad);
     void padFilesDropped (int pad, const juce::StringArray& files);
     c12::Engine& engine() { return proc.getEngine(); }
+    HardwareLookAndFeel& hardware() { return lnf; }
+    void applyTheme (const Theme& t, bool remember);
 
 private:
+    void showThemeMenu();
+    void openThemeEditor();
     void timerCallback() override;
     void syncControlsFromEngine();
     void showSetupMenu();
@@ -62,6 +88,8 @@ private:
     void chooseFile (bool save, const juce::String& patterns, std::function<void (juce::File)> done);
 
     Crate12Processor& proc;
+    ThemeManager themes;          // declared before any component so it outlives them
+    HardwareLookAndFeel lnf;
     LcdDisplay lcd;
     juce::OwnedArray<PadButton> pads;
     juce::OwnedArray<juce::Slider> sliders;
@@ -72,13 +100,15 @@ private:
     juce::TextButton runStop { "RUN/STOP" }, record { "RECORD" }, songSeg { "SEGMENT" },
         tapTempo { "TAP TEMPO" }, tapRepeat { "TAP/REPEAT" }, eraseBtn { "ERASE" },
         setupBtn { "SET-UP" }, specialBtn { "SPECIAL" }, diskBtn { "DISK" },
-        segmentBtn { "SEGMENT EDIT" }, songBtn { "SONG EDIT" }, sampleBtn { "SAMPLE" };
-    juce::Slider tempo, number;
-    juce::Label tempoLabel { {}, "TEMPO" }, numberLabel { {}, "SEG #" };
+        segmentBtn { "SEGMENT EDIT" }, songBtn { "SONG EDIT" }, sampleBtn { "SAMPLE" }, themeBtn { "THEME" };
+    juce::Slider tempo, volume, number;
+    juce::Label tempoLabel { {}, "TEMPO" }, volumeLabel { {}, "VOLUME" }, numberLabel { {}, "SEG #" };
+    juce::Component::SafePointer<juce::DialogWindow> themeWindow;
     juce::ComboBox swing, autoCorrect, metronome, syncMode, mixSel;
     juce::Label swingL { {}, "SWING" }, acL { {}, "AUTO CORRECT" }, metL { {}, "METRONOME" }, syncL { {}, "SYNC" }, mixL { {}, "MIX" };
     juce::TextButton defineMix { "DEFINE MIX" };
 
+    juce::Rectangle<int> transportFrame, performFrame, sliderFrame, padFrame;
     std::unique_ptr<juce::FileChooser> chooser;
     std::vector<uint8_t> lastDisk;     // for "load segment #/sound #" from a chosen disk file
     bool updating = false;

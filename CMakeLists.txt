@@ -63,7 +63,9 @@ juce_add_plugin(Crate12
 
 target_sources(Crate12 PRIVATE
     Source/plugin/PluginProcessor.cpp
-    Source/plugin/PluginEditor.cpp)
+    Source/plugin/PluginEditor.cpp
+    Source/plugin/Theme.cpp
+    Source/plugin/HardwareLookAndFeel.cpp)
 
 target_compile_definitions(Crate12 PUBLIC
     JUCE_WEB_BROWSER=0

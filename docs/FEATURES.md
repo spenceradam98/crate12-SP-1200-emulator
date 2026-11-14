@@ -155,3 +155,12 @@ Legend: ✅ done in this build · 🟡 partial · ⬜ not started · ➖ hardwar
 - **Name.** "SP-1200" and "E-mu" are trademarks (E-mu is owned by Creative; Rossum sells the current SP-1200). The product can't use them in its name or branding. It can say "inspired by classic 12-bit samplers". Crate12 is a placeholder.
 - **Look.** The UI deliberately does not copy the SP-1200 panel trade dress.
 - **Sounds.** Decided: ship our own synthesized kit, and let users import factory sounds from disks they own. The original E-mu factory sounds are never bundled.
+
+## UI and themes
+
+| Feature | Status | Notes |
+|---|---|---|
+| 20 built-in colour themes | ✅ | THEME button. Choice is remembered per computer |
+| Custom colour schemes | ✅ | Theme editor with 16 colour slots, live preview, saved to the user's Crate12/Themes folder |
+| Share themes | ✅ | Export/import `.c12theme` files (small JSON) |
+| Hardware-style controls | ✅ | Recessed fader slots with ridged caps, knurled knobs with skirts, bevelled buttons with LEDs, rubber pads, dot-matrix LCD, brushed panel and screws. All drawn in code, so every theme gets the same look |
